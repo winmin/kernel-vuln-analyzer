@@ -152,7 +152,82 @@ git clone <tree-url> /path/to/analysis/kernel-src
 git checkout <version-tag>
 ```
 
-### 2.2 Static Analysis (Spawn as Subagents)
+### 2.2 Verify Source Version (Required — Do This Before Any Analysis)
+
+Writing a patch against stale source is a critical mistake: the patch may not apply to
+mainline, may fix an already-fixed bug, or may be semantically wrong due to context changes.
+Always verify the source is current before proceeding.
+
+**Step 1: Check if the local tree is up-to-date with remote**
+
+```bash
+git fetch origin
+git log HEAD..origin/master --oneline | head -10
+# If output is non-empty → the local tree is behind. Update it:
+git pull --rebase origin master
+```
+
+**Step 2: Check if the bug is already fixed upstream**
+
+This is the most important check — someone may have already submitted a fix.
+
+```bash
+# Search for patches touching the vulnerable function
+git log --all --oneline -S '<vulnerable_function_name>' -- <file>
+
+# Search for Fixes: tags referencing the introducing commit
+git log --all --oneline --grep='Fixes: <introducing-commit-short-hash>'
+
+# Search commit messages for the bug description keywords
+git log --all --oneline --grep='<key_keyword>' -- <file>
+
+# Check the linux-stable tree for backported fixes
+git log --all --oneline --grep='<CVE-number>'
+```
+
+If a fix already exists:
+- **Report it** — tell the user the bug is already fixed, with the fixing commit hash
+- **Verify the fix** — read the upstream fix to confirm it actually addresses the root cause
+- **Skip to Phase 7** — no need to write a new patch; document the existing fix in the report
+
+**Step 3: Determine the correct base for your patch**
+
+The patch must be written against the correct tree and branch:
+
+```bash
+# What version are we on?
+git describe --tags --abbrev=0       # e.g., v6.12-rc3
+make kernelversion                    # e.g., 6.12.0-rc3
+
+# Does the crash kernel version match our source?
+# Compare the crash log's kernel version with our tree
+```
+
+| Crash kernel version | Patch base should be |
+|---|---|
+| Mainline (e.g., 6.12-rc3) | `torvalds/linux.git` master or the matching -rc tag |
+| Stable (e.g., 6.12.76) | `stable/linux.git` linux-6.12.y branch |
+| Distro kernel (e.g., 5.15.0-ubuntu) | Upstream mainline (distros backport from mainline) |
+| net-next / subsystem tree | The corresponding subsystem tree |
+
+**Step 4: Record the base commit in the report**
+
+Always document the exact commit your patch is based on:
+
+```bash
+echo "Patch base: $(git log --oneline -1 HEAD)" >> report_metadata.txt
+# e.g., "Patch base: abc123def456 Merge tag 'net-6.12-rc4'"
+```
+
+This goes in the report's metadata section so anyone applying the patch knows exactly
+which tree state it was developed against.
+
+**If the source tree was already present** (e.g., the user has a local clone):
+- Still run Steps 1-3 — don't assume it's current
+- `git fetch && git log HEAD..origin/master --oneline` is fast and catches stale trees
+- If the tree is weeks/months behind, warn the user before proceeding
+
+### 2.3 Static Analysis (Spawn as Subagents)
 
 Launch these in parallel:
 

@@ -934,6 +934,7 @@ for correct analysis.
 - `references/qemu-setup.md` — Setting up QEMU+GDB kernel debugging environments
 - `references/kernelctf-knowledge-base.md` — Exploit techniques and patterns from Google's kernelCTF
 - `references/syzbot-workflow.md` — Syzbot interaction: reproducers, `#syz test`, `#syz fix`
+- `references/regression-testing.md` — Kselftest, KUnit, LTP, multi-config testing
 - `assets/report_template.md` — Template for the final analysis report
 
 ### Quick Reference Index
@@ -947,3 +948,6 @@ for correct analysis.
 | Writing a patch | `references/patch-writing-guide.md` § Common Fix Patterns |
 | Setting up QEMU+GDB | `references/qemu-setup.md` § Full QEMU Setup |
 | Similar known exploits | `references/kernelctf-knowledge-base.md` § Exploit Technique Catalog |
+| Writing regression test | `references/regression-testing.md` § Writing a New Selftest |
+| Submitting patch upstream | `references/patch-writing-guide.md` § Submitting Patches Upstream |
+| Defensive blocking | `references/exploitability-assessment.md` § Syscalls to Block |

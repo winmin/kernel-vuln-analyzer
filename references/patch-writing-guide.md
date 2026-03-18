@@ -426,3 +426,62 @@ If referencing a fix for a similar bug:
 - Understand WHY the other fix works
 - Don't blindly apply the same pattern — your bug may have different constraints
 - Verify the fix is complete for YOUR code path
+
+---
+
+## Submitting Patches Upstream
+
+### Find Maintainers and Mailing Lists
+
+```bash
+./scripts/get_maintainer.pl 0001-your-patch.patch
+# Output:
+# Maintainer Name <email> (maintainer:NETWORKING)
+# netdev@vger.kernel.org (open list:NETWORKING)
+```
+
+### Send via `git send-email`
+
+```bash
+# Configure git send-email (one-time setup)
+git config --global sendemail.smtpserver smtp.gmail.com
+git config --global sendemail.smtpserverport 587
+git config --global sendemail.smtpencryption tls
+git config --global sendemail.smtpuser your@gmail.com
+
+# Generate the patch
+git format-patch -1 --subject-prefix="PATCH net" -v1
+
+# Send to maintainers and mailing list
+git send-email \
+    --to='maintainer@email.com' \
+    --cc='netdev@vger.kernel.org' \
+    --cc='linux-kernel@vger.kernel.org' \
+    v1-0001-icmp-fix-null-deref.patch
+```
+
+**Important**:
+- Use `--subject-prefix="PATCH net"` for networking fixes, `"PATCH"` for general
+- Never include `security@kernel.org` if the issue is already public
+- For version 2+: `git format-patch -v2` and explain changes below `---`
+- Do NOT use Gmail web interface — it mangles whitespace and encoding
+- Prefer `mutt` or `thunderbird` (with plain-text mode) for reading replies
+
+### After Submission
+
+- Monitor the mailing list for reviewer feedback (lore.kernel.org)
+- Respond to review comments; issue new versions (`-v2`, `-v3`) as needed
+- Document changes between versions in the patch changelog (below `---`)
+- If syzbot reported the bug, reply with `#syz fix: <commit subject>` after merge
+
+### Regression Test Submission
+
+Consider including a kselftest alongside your fix patch. See `references/regression-testing.md`
+for how to write and validate selftests. Submit the test as a separate patch in the same series:
+
+```bash
+git format-patch -2 --subject-prefix="PATCH net"
+# Generates:
+# 0001-icmp-fix-null-deref-in-icmp_tag_validation.patch
+# 0002-selftests-net-add-icmp-pmtu-unregistered-proto-test.patch
+```

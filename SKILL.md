@@ -141,15 +141,63 @@ When spawning subagents, always provide:
 
 ## Phase 2: Source Acquisition & Static Analysis
 
-### 2.1 Clone and Prepare Source
+### 2.1 Acquire and Update Source
+
+In practice, the user usually already has a local kernel source tree. Do NOT blindly
+clone a fresh repo every time — check what's available first.
+
+**Case A: User already has a local kernel source tree (most common)**
 
 ```bash
-# Clone the appropriate tree
-git clone --depth=1 --branch <version-tag> <tree-url> /path/to/analysis/kernel-src
+cd /path/to/existing/kernel-src
 
-# Or for full history (needed for git bisect):
+# 1. Check current state
+git status                           # any uncommitted changes?
+git describe --tags --abbrev=0       # what version is this?
+git remote -v                        # what remote does it track?
+
+# 2. Fetch latest from upstream — ALWAYS do this
+git fetch origin
+git fetch --tags origin
+
+# 3. Check how far behind we are
+git log --oneline HEAD..origin/master | head -20
+# If significantly behind (>100 commits), strongly recommend updating
+
+# 4. Update to latest (if tree is clean)
+git pull --rebase origin master
+# Or if on a specific branch:
+git pull --rebase origin <branch>
+```
+
+If the user has uncommitted changes (their own annotations, previous patches, etc.):
+- `git stash` first, then fetch/pull, then `git stash pop` after analysis
+- Or work on a detached HEAD at the latest tag: `git checkout <latest-tag>`
+
+**Case B: No local source — clone fresh**
+
+```bash
+# For the appropriate subsystem tree:
 git clone <tree-url> /path/to/analysis/kernel-src
+cd /path/to/analysis/kernel-src
 git checkout <version-tag>
+
+# For full history (needed for git bisect / git blame):
+git clone <tree-url> /path/to/analysis/kernel-src
+
+# Shallow clone is faster but limits git bisect:
+git clone --depth=1 --branch <version-tag> <tree-url> /path/to/analysis/kernel-src
+```
+
+**Case C: Local source exists but tracks a different tree**
+
+Sometimes the user has `torvalds/linux.git` but the bug is in a subsystem tree
+(e.g., `netdev/net.git`). Add it as a second remote:
+
+```bash
+git remote add net git://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git
+git fetch net
+git log net/master --oneline | head -5
 ```
 
 ### 2.2 Verify Source Version (Required — Do This Before Any Analysis)

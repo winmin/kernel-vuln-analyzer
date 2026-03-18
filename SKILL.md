@@ -85,7 +85,32 @@ raw and decoded versions — raw for reproduction, decoded for analysis.
 
 Read `references/crash-log-analysis.md` for detailed patterns and parsing guidance.
 
-### 1.2 Identify the Kernel Subsystem and Source Tree
+### 1.2 Acquire the PoC
+
+If the user provides a crash log but no PoC, you need to obtain or create one.
+
+**From syzbot**: Read `references/syzbot-workflow.md` for details.
+```bash
+# Download C reproducer from syzbot
+curl -sL '<syzbot-repro-url>' -o poc.c
+gcc -o poc -static -lpthread poc.c   # always static-link for QEMU rootfs
+```
+
+**From CVE databases**: Search for public PoCs on GitHub, Exploit-DB, or the CVE references.
+
+**Write from scratch**: If no PoC exists, write a minimal trigger based on the crash call trace:
+1. Identify the syscall entry point from the bottom of the stack trace
+2. Set up required preconditions (namespaces, sysctl, devices)
+3. Issue the triggering syscall sequence
+4. For race conditions: use pthreads to run concurrent paths
+
+**PoC validation checklist**:
+- [ ] Compiles with `gcc -static` (needed for minimal QEMU rootfs)
+- [ ] Does it need root? Network? Specific sysctl?
+- [ ] Does it need `unshare(CLONE_NEWUSER|CLONE_NEWNET)` for namespaces?
+- [ ] Is the crash reliable or does it need loop/stress testing?
+
+### 1.3 Identify the Kernel Subsystem and Source Tree
 
 Based on the call stack and file paths in the crash:
 
@@ -338,7 +363,30 @@ Write a clear, chronological description:
 
 This narrative is essential for the report and for writing a correct patch.
 
-### 3.3 ASCII Art Diagrams (Required)
+### 3.3 Determine Affected Version Range
+
+After identifying the introducing commit, determine the exact affected version range:
+
+```bash
+# Find the earliest release tag containing the introducing commit
+git tag --contains <introducing-commit> | sort -V | head -5
+# e.g., v3.13-rc1 → bug exists since v3.13
+
+# If a fix already exists upstream, find when it landed
+git tag --contains <fixing-commit> | sort -V | head -5
+# e.g., v6.14-rc2 → fixed in v6.14
+
+# Check which stable branches are affected
+git branch -r --contains <introducing-commit> | grep 'stable'
+# Check which stable branches have the fix backported
+git branch -r --contains <fixing-commit> | grep 'stable'
+```
+
+Record in the report: `Affected: v3.13 — v6.13 (fixed in v6.14-rc2)`
+
+For stable/LTS impact, check if the fix needs `Cc: stable@vger.kernel.org`.
+
+### 3.4 ASCII Art Diagrams (Required)
 
 Every root cause analysis MUST include ASCII art diagrams to make complex data flows and
 structures visually clear. Flat text descriptions of protocols, call chains, and memory
@@ -499,6 +547,38 @@ bt                             # Backtrace
 watch *(int *)0xaddr          # Hardware watchpoint on the vulnerable field
 ```
 
+### 4.4 Handling Non-Deterministic Reproduction
+
+Race conditions and timing-sensitive bugs may not crash on every run.
+
+**Increase reproduction rate**:
+```bash
+# Loop the PoC — run 100 times and count crashes
+for i in $(seq 1 100); do
+    timeout 5 ./poc 2>/dev/null
+    echo "Run $i: exit=$?"
+done
+
+# Increase CPU count to widen race windows
+qemu-system-x86_64 ... -smp 4    # or -smp 8
+
+# Add system stress to increase scheduling pressure
+stress-ng --cpu 4 --io 2 --vm 2 --timeout 60 &
+./poc
+
+# Use taskset to pin PoC threads to specific CPUs
+taskset -c 0,1 ./poc
+```
+
+**Record reproduction rate** in the report: e.g., "Triggers 30/100 runs with -smp 4"
+
+**If the PoC never crashes**:
+- Verify kernel config matches the crash environment (especially KASAN, PREEMPT, SMP)
+- Check if the compiler version matters (see `references/syzbot-workflow.md`)
+- Try the exact syzbot kernel config if available
+- Add `usleep()` delays in the PoC to manipulate race timing
+- Use `ftrace` to confirm the race window exists even if it doesn't crash
+
 ---
 
 ## Phase 5: Exploitability Assessment
@@ -561,17 +641,18 @@ Read `references/patch-writing-guide.md` for Linux kernel patch conventions.
 
 **Commit message format**:
 
-The commit message MUST include the decoded backtrace from `scripts/decode_stacktrace.sh`.
-This is standard Linux kernel convention — look at any KASAN/bug fix in mainline `git log`
-and you'll see the decoded trace. It makes the bug searchable by function name, file, and line.
+The commit message MUST include the decoded backtrace and follow upstream tag conventions.
+Look at any KASAN/bug fix in mainline `git log --grep='KASAN'` for real examples.
 
 ```
 subsystem: brief description of the fix
 
 Longer explanation of what the bug is, how it manifests, and why
-this patch fixes it. Include the root cause analysis.
+this patch fixes it. Use present tense. Include the root cause.
 
-Decoded backtrace (from scripts/decode_stacktrace.sh):
+Introduce the backtrace naturally (upstream convention):
+
+syzbot reported a null-ptr-deref in icmp_unreach [1]:
 
  BUG: KASAN: null-ptr-deref in icmp_unreach (net/ipv4/icmp.c:1085)
  Call Trace:
@@ -584,18 +665,44 @@ Decoded backtrace (from scripts/decode_stacktrace.sh):
   ip_rcv (net/ipv4/ip_input.c:569)
   </IRQ>
 
+The root cause is that icmp_tag_validation() dereferences
+inet_protos[proto] without checking for NULL...
+
+<explanation of the fix>
+
+[1] https://syzkaller.appspot.com/bug?extid=<hash>
+
 Fixes: <12-char-hash> ("original commit title that introduced the bug")
 Reported-by: <who reported> <email>
+Closes: <bug report URL>
+Link: <lore.kernel.org mail thread URL>
+Reviewed-by: <reviewer> <email>
+Cc: stable@vger.kernel.org
 Signed-off-by: <your name> <email>
 ```
 
-**Backtrace guidelines for the commit message**:
-- Use the DECODED trace (with file:line), not raw hex addresses
-- Trim to the relevant frames — typically the crash point + 5-10 key frames in the call chain
-- Remove noise: `? unreliable_frame`, timestamps, register dumps, module lists
-- Include the bug title line (e.g., `BUG: KASAN: ...`)
-- Include `<IRQ>` / `</IRQ>` / `<TASK>` context markers
-- Indent with a single space
+**Commit message tag rules** (order matters):
+
+| Tag | Required? | Purpose |
+|---|---|---|
+| `Fixes:` | Yes | 12-char hash of the introducing commit |
+| `Reported-by:` | Yes | Who found the bug |
+| `Closes:` | Yes (if URL exists) | URL of the bug report — **required after `Reported-by:` per upstream convention** |
+| `Link:` | Recommended | lore.kernel.org link to the mailing list discussion |
+| `Tested-by:` | Recommended | Who tested the patch (can be `syzbot+<hash>@...` if syzbot tested it) |
+| `Reviewed-by:` | If reviewed | Code reviewer's signoff |
+| `Acked-by:` | If acked | Subsystem maintainer acknowledgment |
+| `Cc: stable@vger.kernel.org` | If applicable | Request backport to stable trees |
+| `Signed-off-by:` | Yes (last) | Developer Certificate of Origin |
+
+**Backtrace guidelines**:
+- Introduce naturally: `"syzbot reported a <bug-type> in <function> [1]:"` or just paste the
+  first crash line, NOT `"Decoded backtrace:"` (not used upstream)
+- Use the DECODED trace (file:line), not raw hex addresses
+- Trim to key frames: crash point + 5-10 relevant frames
+- Remove noise: timestamps, registers, `?` frames, `Code:` lines, module lists
+- Indent with single space
+- If from syzbot, add footnote `[1]` linking to the syzbot bug page
 
 ### 6.2 Validate the Patch
 
@@ -806,6 +913,11 @@ When writing patches, strictly follow:
 | `addr2line` | Resolve addresses to source lines |
 | `pahole` | Inspect struct layouts and padding |
 | `crash` | Kernel crash dump analysis |
+| `ftrace` | In-kernel function tracer (no recompile needed) |
+| `perf` | Hardware performance counters, timing analysis |
+| `objdump` | Disassembly when source-level debugging isn't enough |
+| `strace` | Trace PoC syscall sequences |
+| `slabinfo` | Runtime slab cache analysis |
 
 ---
 
@@ -821,4 +933,17 @@ for correct analysis.
 - `references/patch-writing-guide.md` — Linux kernel patch conventions and common patterns
 - `references/qemu-setup.md` — Setting up QEMU+GDB kernel debugging environments
 - `references/kernelctf-knowledge-base.md` — Exploit techniques and patterns from Google's kernelCTF
+- `references/syzbot-workflow.md` — Syzbot interaction: reproducers, `#syz test`, `#syz fix`
 - `assets/report_template.md` — Template for the final analysis report
+
+### Quick Reference Index
+
+| When you encounter... | Read this |
+|---|---|
+| KASAN crash log | `references/crash-log-analysis.md` § KASAN Reports |
+| syzbot report URL | `references/syzbot-workflow.md` § Reading a Syzbot Report |
+| UAF / double-free / OOB | `references/vuln-classification.md` |
+| "Is this exploitable?" | `references/exploitability-assessment.md` § Assessment Methodology |
+| Writing a patch | `references/patch-writing-guide.md` § Common Fix Patterns |
+| Setting up QEMU+GDB | `references/qemu-setup.md` § Full QEMU Setup |
+| Similar known exploits | `references/kernelctf-knowledge-base.md` § Exploit Technique Catalog |

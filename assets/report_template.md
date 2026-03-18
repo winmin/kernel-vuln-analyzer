@@ -51,6 +51,18 @@
 
 ---
 
+## 2.5 Subsystem Background
+
+{{Explain how the affected subsystem works NORMALLY before describing the bug.
+This section helps readers who aren't familiar with the subsystem understand the context.}}
+
+- **Architecture**: {{Key data structures, their relationships, lifecycle}}
+- **Normal call path**: {{What the code is supposed to do in the non-buggy case}}
+- **Why this area is bug-prone**: {{e.g., complex state machine, performance-critical path
+  with minimal validation, historical pattern of similar bugs}}
+
+---
+
 ## 3. Root Cause Analysis
 
 ### 3.1 Vulnerable Code Path
@@ -253,7 +265,22 @@ Signed-off-by: {{name}} <{{email}}>
 
 ---
 
-## 10. Timeline
+## 10. Environment & Reproducibility
+
+Record exact environment for reproducibility:
+
+| Item | Value |
+|---|---|
+| Kernel source | `{{git repo URL}}` @ `{{commit hash}}` |
+| Kernel version | `{{make kernelversion output}}` |
+| Compiler | `{{gcc --version / clang --version}}` |
+| QEMU | `{{qemu-system-x86_64 --version}}` |
+| Busybox | `{{busybox --help | head -1}}` |
+| Host OS | `{{uname -a}}` |
+
+---
+
+## 11. Timeline
 
 | Date | Event |
 |---|---|

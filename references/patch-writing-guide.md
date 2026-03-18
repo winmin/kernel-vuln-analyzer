@@ -298,8 +298,21 @@ Remove from the commit message:
 - **Fixes tag**: 12-character abbreviated commit hash + original subject
   - Find with: `git log --oneline --all -- <file>`
   - Or `git bisect` for the introducing commit
+- **Reported-by**: Who found the bug (name + email)
+- **Closes**: URL of the bug report — **required after Reported-by per upstream convention**
+  - syzbot: `Closes: https://syzkaller.appspot.com/bug?extid=<hash>`
+  - Bugzilla: `Closes: https://bugzilla.kernel.org/show_bug.cgi?id=<id>`
+- **Link**: lore.kernel.org URL to the mailing list discussion thread
+- **Tested-by**: Who tested the patch (can be `syzbot+<hash>@syzkaller.appspotmail.com`)
+- **Reviewed-by / Acked-by**: Code reviewer / subsystem maintainer signoff
 - **Cc: stable**: Include if the bug affects stable/LTS kernels
-- **Signed-off-by**: Required (Developer Certificate of Origin)
+- **Signed-off-by**: Required, always last (Developer Certificate of Origin)
+
+**Tag ordering** (per `Documentation/process/submitting-patches.rst`):
+```
+Fixes: → Reported-by: → Closes: → Link: → Tested-by: →
+Reviewed-by: → Acked-by: → Cc: → Signed-off-by:
+```
 
 ---
 

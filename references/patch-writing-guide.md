@@ -460,8 +460,60 @@ git send-email \
     v1-0001-icmp-fix-null-deref.patch
 ```
 
+### Choosing the Right Subject Prefix Tag
+
+The `[PATCH <tag>]` prefix tells maintainers **which tree** to apply your patch to.
+Getting this wrong means your patch goes to the wrong tree and gets ignored.
+
+```bash
+git format-patch -1 --subject-prefix="PATCH <tag>"
+```
+
+**How to determine the tag**:
+
+| Your patch is... | Tag | Tree |
+|---|---|---|
+| **Networking bug fix** (for current release) | `PATCH net` | `netdev/net.git` |
+| **Networking new feature** (for next release) | `PATCH net-next` | `netdev/net-next.git` |
+| **BPF bug fix** | `PATCH bpf` | `bpf/bpf.git` |
+| **BPF new feature** | `PATCH bpf-next` | `bpf/bpf-next.git` |
+| **Wireless fix** | `PATCH wifi` | `wireless/wifi.git` |
+| **Bluetooth fix** | `PATCH bluetooth` | `bluetooth/bluetooth.git` |
+| **General kernel fix** (no subsystem tree) | `PATCH` | `torvalds/linux.git` |
+| **Stable backport request** | `PATCH stable` | stable tree |
+| **Any subsystem with its own tree** | `PATCH <subsystem>` | check MAINTAINERS |
+
+**Decision rule**: Bug fixes go to the **base tree** (`net`, `bpf`), new features go
+to the **-next tree** (`net-next`, `bpf-next`). When in doubt, check where recent
+commits to the same file went:
+
+```bash
+# Look at recent patches to this file on lore.kernel.org
+# or check the git log of the subsystem tree
+git log --oneline net/ipv4/icmp.c | head -10
+# If they say "net:" or were merged via net.git → use "PATCH net"
+```
+
+**For non-networking subsystems**, check `MAINTAINERS` for the tree URL:
+
+```bash
+./scripts/get_maintainer.pl --scm 0001-your-patch.patch
+# Look for the "SCM" line — it shows the git tree
+# e.g., "git git://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git"
+#        → tag is "net"
+```
+
+**Version tags combine**: `[PATCH net v2]`, `[PATCH bpf-next v3 1/2]`
+
+```bash
+# Version 2 of a networking fix:
+git format-patch -1 --subject-prefix="PATCH net v2"
+
+# A 2-patch series for bpf-next, version 3:
+git format-patch -2 --subject-prefix="PATCH bpf-next v3"
+```
+
 **Important**:
-- Use `--subject-prefix="PATCH net"` for networking fixes, `"PATCH"` for general
 - Never include `security@kernel.org` if the issue is already public
 - For version 2+: `git format-patch -v2` and explain changes below `---`
 - Do NOT use Gmail web interface — it mangles whitespace and encoding

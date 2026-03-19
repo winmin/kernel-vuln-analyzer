@@ -615,7 +615,68 @@ Read `references/exploitability-assessment.md` for the full assessment framework
    - Search the kernelctf knowledge base for exploits in the same subsystem or using similar primitives
    - Reference known techniques: `msg_msg` spray, `pipe_buffer` ROP, `io_uring` primitives, cross-cache attacks
 
-### 5.2 Exploitability Rating
+### 5.2 Permission Gate Analysis (`capable` vs `ns_capable`) — Required
+
+Before rating exploitability, you MUST trace the full permission check chain from
+syscall entry to the vulnerable function. This determines the true attack surface.
+
+**Why this matters**: A bug gated by `capable(CAP_NET_ADMIN)` needs real root.
+But the SAME capability checked via `ns_capable()` is obtainable by any unprivileged
+user through `unshare(CLONE_NEWUSER|CLONE_NEWNET)`. Many analysts miss this distinction,
+leading to wrong severity assessments.
+
+**Step 1: Find all capability checks in the call path**
+
+```bash
+# Trace from syscall entry to the vulnerable function
+# and grep for every permission check along the way
+grep -n 'capable\|ns_capable\|netlink_capable\|nfnl.*capable\|sk_net_capable' \
+    net/netfilter/nfnetlink.c net/netfilter/nfnetlink_osf.c
+```
+
+**Step 2: Draw the permission gate diagram**
+
+For each layer, document: what check, namespace-aware or not, what happens on failure.
+
+```
+User-space syscall (sendmsg on netlink socket)
+         │
+         ▼
+Framework layer (e.g., nfnetlink_rcv)
+│  netlink_net_capable(skb, CAP_NET_ADMIN)  ← namespace-aware (ns_capable)
+│  userns root CAN pass this gate
+│  failure → -EPERM, never reaches callback
+         │
+         ▼
+Subsystem callback (e.g., nfnl_osf_add_callback)
+│  capable(CAP_NET_ADMIN)  ← init_user_ns ONLY
+│  userns root CANNOT pass this gate
+│  failure → -EPERM
+         │
+         ▼
+Vulnerable code path
+```
+
+**Step 3: Determine effective privilege requirement**
+
+The effective requirement is the **most restrictive** check in the entire chain:
+
+- If ANY layer uses `capable()` → needs real root (init_user_ns)
+- If ALL layers use `ns_capable()` / `netlink_capable()` → reachable via userns
+- Watch for framework vs callback mismatch (common pattern: framework is ns-aware
+  but specific callback adds a stricter `capable()` check)
+
+**Step 4: Document in the report**
+
+Include the ASCII gate diagram in the report's exploitability section. State clearly:
+- "Effective privilege: unprivileged (all checks are namespace-aware)" OR
+- "Effective privilege: real root (callback uses `capable()` at line X)"
+- Note if a future `capable()` → `ns_capable()` change would expand the attack surface
+
+Read `references/exploitability-assessment.md` § "Critical: capable() vs ns_capable()"
+for the full reference on which subsystems use which check.
+
+### 5.3 Exploitability Rating
 
 Rate as one of:
 - **Highly Exploitable**: Reliable UAF/OOB-write with good heap spray target, reachable unprivileged

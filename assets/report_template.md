@@ -130,7 +130,35 @@ the pointer field at offset 0x40 to read as NULL."}}
 
 ### 5.1 Rating: {{RATING}}
 
-### 5.2 Primitive Analysis
+### 5.2 Permission Gate Analysis (`capable` vs `ns_capable`)
+
+Trace every capability check from syscall entry to the vulnerable code:
+
+```
+{{Syscall entry / packet reception}}
+         │
+         ▼
+{{Framework layer}} ({{file.c:line}})
+│  {{check function}}({{capability}})  ← {{namespace-aware / init_user_ns only}}
+│  {{userns root CAN / CANNOT pass}}
+│  failure → {{-EPERM / drop}}
+         │
+         ▼
+{{Subsystem callback}} ({{file.c:line}})
+│  {{check function}}({{capability}})  ← {{namespace-aware / init_user_ns only}}
+│  failure → {{-EPERM / drop}}
+         │
+         ▼
+{{Vulnerable code path}}
+```
+
+**Effective privilege requirement**: {{The most restrictive check in the chain}}
+- {{e.g., "Real root required — callback uses capable() at line X"}}
+- {{OR "Unprivileged via userns — all checks use ns_capable()"}}
+
+**Note**: {{Any comments about potential future changes that could expand attack surface}}
+
+### 5.3 Primitive Analysis
 
 - **What the bug provides**: {{e.g., UAF on a 256-byte slab object}}
 - **Controllability**: {{How much control does the attacker have?}}

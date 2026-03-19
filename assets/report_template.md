@@ -164,7 +164,21 @@ Trace every capability check from syscall entry to the vulnerable code:
 - **Controllability**: {{How much control does the attacker have?}}
 - **Timing**: {{Is the race window wide enough?}}
 
-### 5.3 Exploitation Path
+### 5.4 Alternative Exploitation Analysis
+
+Do not accept the initial classification without probing deeper.
+
+**Challenges considered**:
+1. Could this be a UAF masked as NULL deref? — {{Yes/No: reasoning}}
+2. Is the faulting offset/address controllable? — {{Yes/No: reasoning}}
+3. Does different timing yield a stronger primitive? — {{Yes/No: reasoning}}
+4. Does a different code path give write instead of read? — {{Yes/No: reasoning}}
+5. Can this chain with another bug (info leak + this)? — {{Yes/No: reasoning}}
+6. Without CONFIG_INIT_ON_FREE / KASAN — does behavior change? — {{Yes/No: reasoning}}
+
+**Conclusion**: {{Initial assessment stands / upgraded to X because Y}}
+
+### 5.5 Exploitation Path
 
 {{If exploitable, describe the theoretical exploitation path:}}
 

@@ -676,14 +676,91 @@ Include the ASCII gate diagram in the report's exploitability section. State cle
 Read `references/exploitability-assessment.md` § "Critical: capable() vs ns_capable()"
 for the full reference on which subsystems use which check.
 
-### 5.3 Exploitability Rating
+### 5.3 Challenge Your Initial Assessment (Required)
+
+**Do NOT stop at the first conclusion.** The most common mistake in kernel vulnerability
+analysis is accepting the surface-level classification ("it's just a NULL deref / DoS")
+without probing deeper. Many high-severity CVEs were initially dismissed as DoS.
+
+After forming your initial assessment, systematically challenge it by asking these questions:
+
+#### "Is the crash symptom hiding a stronger primitive?"
+
+| Initial symptom | Ask yourself | Deeper reality? |
+|---|---|---|
+| NULL ptr deref | Is KASAN enabled? Without KASAN, a UAF to zeroed memory looks like NULL deref | Possibly UAF |
+| NULL ptr deref at offset N | Is N controllable by the attacker? If so, this may be an arbitrary-address read | Possible info leak |
+| GPF / non-canonical addr | Is the address derived from attacker data + corruption? Could the attacker make it canonical? | Possible controlled dereference |
+| Single-byte OOB write | What's adjacent in the slab? Even 1 byte can flip a boolean flag or corrupt a refcount | Possible privilege escalation |
+| Refcount WARNING | Does this eventually lead to a UAF if triggered enough times? | Likely UAF with patience |
+| DoS-only race | With different timing, does the race give a wider window? Can userfaultfd freeze the race? | Possible reliable UAF |
+
+#### "Can I get a different/stronger primitive from the same root cause?"
+
+Think about what happens if you **change the PoC strategy**:
+
+- **Different timing**: The current PoC crashes immediately, but what if you delay
+  the second operation? Could you get a UAF instead of a NULL deref?
+- **Different object size**: Can you control the allocation size to land in a more
+  useful slab cache?
+- **Different protocol/path**: The bug might be reachable through multiple code paths —
+  does another path give a write instead of a read?
+- **Partial trigger**: Instead of fully triggering the crash, can you stop halfway
+  and get an info leak or partial corruption?
+
+#### "Can this be chained with other bugs?"
+
+Even a "DoS-only" bug can be valuable in a chain:
+- **Info leak + this bug**: If you have a separate KASLR bypass, does this bug
+  become exploitable?
+- **This bug + another write**: A read primitive from this bug + a write primitive
+  from another bug = full exploit
+- **This bug enables another**: Does crashing this specific code path leave the
+  system in a state that makes another bug reachable?
+
+#### "What happens on different kernel configurations?"
+
+- Without `CONFIG_INIT_ON_FREE_DEFAULT_ON`: freed memory retains old data →
+  a NULL deref might become a valid-pointer dereference (UAF)
+- Without KASAN: UAF doesn't get caught immediately → attacker has more time
+  to spray
+- With `CONFIG_USERFAULTFD=y`: race windows can be frozen → narrow races become
+  reliable
+- With older kernels: NULL page may be mappable (`mmap_min_addr=0`) → NULL deref
+  becomes code execution
+
+#### Document your reasoning
+
+In the report, include a section like:
+
+```markdown
+### Alternative Exploitation Analysis
+
+Initial assessment: NULL pointer dereference → DoS only
+
+Challenges considered:
+1. Could this be a UAF? — No: inet_protos[] is a static global array, not a heap object.
+   No allocation/free lifecycle exists.
+2. Is the offset controllable? — No: always dereferences NULL + 0x10 regardless of
+   attacker-chosen protocol number. All unregistered protocols produce the same NULL.
+3. Different timing? — No: this is a single-packet, single-path crash. No race involved.
+4. Chain potential? — Low: the crash is in softirq context and is immediately fatal.
+   No opportunity for continued execution after the fault.
+
+Conclusion: DoS assessment stands. No viable path to stronger primitive.
+```
+
+**If you find a stronger primitive**, update the rating and exploitation path accordingly.
+This step often upgrades "DoS" bugs to "Likely Exploitable" or higher.
+
+### 5.4 Exploitability Rating
 
 Rate as one of:
 - **Highly Exploitable**: Reliable UAF/OOB-write with good heap spray target, reachable unprivileged
 - **Likely Exploitable**: Bug gives useful primitive but exploitation has challenges (narrow race, limited control)
 - **Potentially Exploitable**: Bug exists but exploitation path unclear or requires unusual conditions
-- **Unlikely Exploitable**: DoS only, or requires already-privileged attacker
-- **Not Exploitable**: Theoretical bug with no practical attack path
+- **Unlikely Exploitable**: DoS only, confirmed no stronger primitive after challenge analysis
+- **Not Exploitable**: Theoretical bug with no practical trigger path
 
 ---
 

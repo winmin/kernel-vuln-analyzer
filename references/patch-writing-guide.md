@@ -431,33 +431,117 @@ If referencing a fix for a similar bug:
 
 ## Submitting Patches Upstream
 
-### Find Maintainers and Mailing Lists
+### Find Maintainers and Generate `git send-email` Command
+
+Use `get_maintainer.pl` to automatically determine who should receive the patch
+and which mailing lists to CC. Then generate a ready-to-run `git send-email` command.
+
+**Step 1: Run `get_maintainer.pl` on the patch**
 
 ```bash
 ./scripts/get_maintainer.pl 0001-your-patch.patch
-# Output:
-# Maintainer Name <email> (maintainer:NETWORKING)
-# netdev@vger.kernel.org (open list:NETWORKING)
 ```
 
-### Send via `git send-email`
+Example output:
+```
+David S. Miller <davem@davemloft.net> (maintainer:NETWORKING CORE)
+Eric Dumazet <edumazet@google.com> (reviewer:NETWORKING CORE)
+Jakub Kicinski <kuba@kernel.org> (maintainer:NETWORKING CORE)
+Paolo Abeni <pabeni@redhat.com> (maintainer:NETWORKING CORE)
+netdev@vger.kernel.org (open list:NETWORKING CORE)
+linux-kernel@vger.kernel.org (open list)
+```
+
+**Step 2: Auto-generate the `git send-email` command**
+
+`get_maintainer.pl` can directly produce `--to` and `--cc` flags:
 
 ```bash
-# Configure git send-email (one-time setup)
+# Generate --to/--cc flags from get_maintainer.pl output
+./scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats \
+    0001-your-patch.patch \
+    | sed 's/^/--cc=/' \
+    | tr '\n' ' '
+```
+
+Or more precisely, use the built-in `--separator` option and pipe to `git send-email`:
+
+```bash
+# One-liner: generate patch + send with correct recipients
+git send-email \
+    $(./scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats \
+        --separator=',' 0001-your-patch.patch \
+        | awk -F, '{for(i=1;i<=NF;i++) print "--cc=\""$i"\""}') \
+    --to='netdev@vger.kernel.org' \
+    0001-your-patch.patch
+```
+
+**Step 3: The recommended approach — let `git send-email` invoke it automatically**
+
+The cleanest method is to configure `git send-email` to call `get_maintainer.pl` itself:
+
+```bash
+# In the kernel source tree, set this config:
+git config sendemail.tocmd 'scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats --nol'
+git config sendemail.cccmd 'scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats --nom'
+
+# Now git send-email automatically populates To: and Cc: from the patch content
+git send-email 0001-your-patch.patch
+# It will show you the recipients and ask for confirmation before sending
+```
+
+Explanation of flags:
+- `--nogit` / `--nogit-fallback`: don't use git blame (faster, avoids noise)
+- `--norolestats`: don't show role annotations in email addresses
+- `--nol`: exclude mailing lists (for `tocmd` — puts maintainers in To:)
+- `--nom`: exclude maintainers (for `cccmd` — puts lists in Cc:)
+
+**Step 4: Full example with a real patch**
+
+```bash
+# 1. Generate the patch
+git format-patch -1 --subject-prefix="PATCH net"
+# → 0001-icmp-fix-null-deref-in-icmp_tag_validation.patch
+
+# 2. Check who gets it
+./scripts/get_maintainer.pl 0001-icmp-fix-null-deref-in-icmp_tag_validation.patch
+# David S. Miller <davem@davemloft.net> (maintainer:NETWORKING CORE)
+# Eric Dumazet <edumazet@google.com> (reviewer:NETWORKING CORE)
+# Jakub Kicinski <kuba@kernel.org> (maintainer:NETWORKING CORE)
+# Paolo Abeni <pabeni@redhat.com> (maintainer:NETWORKING CORE)
+# netdev@vger.kernel.org (open list:NETWORKING CORE)
+# linux-kernel@vger.kernel.org (open list)
+
+# 3. Send (with tocmd/cccmd configured, or manually)
+git send-email \
+    --to='davem@davemloft.net' \
+    --to='edumazet@google.com' \
+    --to='kuba@kernel.org' \
+    --to='pabeni@redhat.com' \
+    --cc='netdev@vger.kernel.org' \
+    --cc='linux-kernel@vger.kernel.org' \
+    0001-icmp-fix-null-deref-in-icmp_tag_validation.patch
+
+# 4. Save the command and recipients in the report
+```
+
+**Step 5: Record in the report**
+
+Include the `get_maintainer.pl` output and the exact `git send-email` command
+in the report's patch section, so the user can copy-paste to submit.
+
+### `git send-email` Setup (One-Time)
+
+```bash
+# SMTP configuration
 git config --global sendemail.smtpserver smtp.gmail.com
 git config --global sendemail.smtpserverport 587
 git config --global sendemail.smtpencryption tls
 git config --global sendemail.smtpuser your@gmail.com
 
-# Generate the patch
-git format-patch -1 --subject-prefix="PATCH net" -v1
-
-# Send to maintainers and mailing list
-git send-email \
-    --to='maintainer@email.com' \
-    --cc='netdev@vger.kernel.org' \
-    --cc='linux-kernel@vger.kernel.org' \
-    v1-0001-icmp-fix-null-deref.patch
+# Auto-recipient configuration (run in kernel source tree)
+git config sendemail.tocmd 'scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats --nol'
+git config sendemail.cccmd 'scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats --nom'
 ```
 
 ### Choosing the Right Subject Prefix Tag

@@ -848,6 +848,25 @@ Signed-off-by: <your name> <email>
 2. **Compilation**: `make -j$(nproc)` with at least `defconfig` and the relevant config options
 3. **Sparse/smatch** (if available): Static analysis for locking errors
 4. **Subsystem selftests**: `make -C tools/testing/selftests/<subsystem> run_tests`
+5. **Generate submission command**: Run `get_maintainer.pl` and produce the ready-to-use
+   `git send-email` command. Include this in the report so the user can copy-paste to submit.
+
+```bash
+# Generate patch file
+git format-patch -1 --subject-prefix="PATCH net"
+
+# Get maintainers and mailing lists, then build the send command
+./scripts/get_maintainer.pl 0001-*.patch
+
+# Auto-generate git send-email with correct recipients
+git send-email \
+    $(./scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats \
+        0001-*.patch | awk '{printf "--cc=\047%s\047 ", $0}') \
+    0001-*.patch
+```
+
+Read `references/patch-writing-guide.md` § "Find Maintainers and Generate git send-email Command"
+for the full workflow including `tocmd`/`cccmd` auto-configuration.
 
 ### 6.3 Verify in QEMU
 

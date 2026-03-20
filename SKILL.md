@@ -267,21 +267,37 @@ If a fix already exists:
 
 This is a **critical distinction** that the skill MUST enforce:
 
+Extract the crash kernel version from the log first:
+
+```bash
+# Parse the crash log for the kernel version
+CRASH_VERSION=$(grep -oP 'Not tainted \K\S+' crash.log)
+# e.g., CRASH_VERSION="6.12.77"
+
+# Find the closest git tag
+CRASH_TAG=$(git tag -l "v${CRASH_VERSION}*" | sort -V | tail -1)
+# Or for stable kernels: git tag -l "v$(echo $CRASH_VERSION | cut -d. -f1-2)*" | sort -V | tail -1
+
+# Get current latest upstream
+git fetch origin --tags
+LATEST=$(git describe --tags --abbrev=0 origin/master)
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  The crash log says kernel 6.12.77.                             │
-│  Your local tree is also 6.12.x.                                │
-│                                                                  │
-│  WRONG: Write the patch against 6.12.x and call it done.        │
-│  RIGHT: Analyze on 6.12.x, then rebase the fix onto latest      │
-│         mainline/subsystem-tree HEAD before finalizing.           │
-└─────────────────────────────────────────────────────────────────┘
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  Crash log says kernel $CRASH_VERSION (e.g., a stable/old release) │
+│  Latest upstream is $LATEST (e.g., mainline HEAD)                  │
+│                                                                     │
+│  WRONG: Write the patch against $CRASH_VERSION and call it done.    │
+│  RIGHT: Analyze on $CRASH_VERSION, then rebase the fix onto         │
+│         $LATEST mainline/subsystem-tree HEAD before finalizing.     │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 **Stage 1 — Analyze & Reproduce on the crash version**:
 ```bash
 # Checkout the crash kernel version for analysis and QEMU reproduction
-git checkout v6.12.77    # or the closest tag
+git checkout "$CRASH_TAG"
 # Build, boot in QEMU, reproduce the crash, do root cause analysis
 # This ensures you understand the bug in the exact context it was reported
 ```
@@ -314,25 +330,25 @@ git diff > patch.diff      # your fix, based on latest code
 
 # Verify the fix also applies to the crash version (for QEMU testing)
 git stash
-git checkout v6.12.77
+git checkout "$CRASH_TAG"
 git stash pop              # if it applies cleanly
-# Or: git cherry-pick / manual port
+# Or: git cherry-pick / manual port if context differs
 ```
 
 **Why this matters**:
 - Upstream WILL NOT accept patches based on old stable kernels
 - The code around the bug may have changed (variable renames, refactors, new callers)
-- A patch against 6.12.77 may not apply to 6.15-rc1 at all
+- A patch against an old stable may not apply to the latest mainline at all
 - Even if the patch applies, context lines may differ → `git am` fails
 
 | Crash kernel version | Analyze on | Write patch against |
 |---|---|---|
-| Stable (e.g., 6.12.77) | `v6.12.77` tag | Latest `origin/master` or subsystem HEAD |
-| Mainline (e.g., 6.15-rc3) | `v6.15-rc3` tag | Latest `origin/master` |
-| Distro (e.g., 5.15.0-ubuntu) | Distro source | Upstream mainline HEAD |
+| Stable (e.g., X.Y.Z) | `v$CRASH_VERSION` tag | Latest `origin/master` or subsystem HEAD |
+| Mainline (e.g., X.Y-rcN) | `v$CRASH_VERSION` tag | Latest `origin/master` |
+| Distro (e.g., X.Y.Z-distro) | Distro source | Upstream mainline HEAD |
 | net-next / subsystem tree | Subsystem HEAD | Subsystem HEAD (already latest) |
 
-**If the local tree is old (e.g., user has 6.12.x but mainline is 6.15)**:
+**If the local tree is old and behind upstream**:
 ```bash
 # You MUST update before writing the patch
 git fetch origin
@@ -340,7 +356,7 @@ git log --oneline HEAD..origin/master | wc -l
 # If significantly behind → pull or checkout latest
 
 # Check if the vulnerable file has changed significantly
-git diff v6.12.77..origin/master -- <path/to/file> | diffstat
+git diff "$CRASH_TAG"..origin/master -- <path/to/file> | diffstat
 # If large diff → the patch context has changed, must write against latest
 ```
 

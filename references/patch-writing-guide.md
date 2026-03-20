@@ -597,7 +597,43 @@ git format-patch -1 --subject-prefix="PATCH net v2"
 git format-patch -2 --subject-prefix="PATCH bpf-next v3"
 ```
 
-**Important**:
+**Important — No MIME headers in patches**:
+
+Linux kernel patches must be plain ASCII. If `git format-patch` produces MIME
+headers like `Content-Type: text/plain; charset=UTF-8` or
+`Content-Transfer-Encoding: 8bit`, the patch will be rejected or mangled by
+mailing list infrastructure.
+
+**Root cause**: MIME headers appear when the commit message contains non-ASCII
+characters (UTF-8 names, CJK characters, special symbols).
+
+**Prevention**:
+```bash
+# Commit message must be pure ASCII — no UTF-8 characters
+# Check before generating patch:
+file 0001-*.patch | grep -i utf    # should find nothing
+grep -P '[\x80-\xFF]' 0001-*.patch # should find nothing (outside diff hunks)
+
+# If MIME headers appear, fix the commit message:
+# Replace non-ASCII characters with ASCII equivalents
+# e.g., "José" → "Jose", Chinese text → English
+git commit --amend   # fix the message
+git format-patch -1 --subject-prefix="PATCH <tag>"
+
+# Verify the output has NO MIME headers:
+head -20 0001-*.patch
+# Should show: From, Date, Subject, blank line, body
+# Should NOT show: MIME-Version, Content-Type, Content-Transfer-Encoding
+```
+
+**Rules for commit message encoding**:
+- Commit message body: **pure ASCII only**
+- `Signed-off-by` / `Reported-by` names: use ASCII transliteration if needed
+- Backtrace content: already ASCII (kernel output is always ASCII)
+- The diff hunks themselves can contain UTF-8 (if the source file does), that's OK —
+  only the commit message metadata must be ASCII
+
+**Other important rules**:
 - Never include `security@kernel.org` if the issue is already public
 - For version 2+: `git format-patch -v2` and explain changes below `---`
 - Do NOT use Gmail web interface — it mangles whitespace and encoding

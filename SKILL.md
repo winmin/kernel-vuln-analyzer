@@ -1070,7 +1070,15 @@ raw socket, or the packet can arrive from the network (remote).
 2. **Compilation**: `make -j$(nproc)` with at least `defconfig` and the relevant config options
 3. **Sparse/smatch** (if available): Static analysis for locking errors
 4. **Subsystem selftests**: `make -C tools/testing/selftests/<subsystem> run_tests`
-5. **Generate submission command**: Run `get_maintainer.pl` and produce the ready-to-use
+5. **No MIME headers**: Verify the generated patch has NO `MIME-Version`, `Content-Type`,
+   or `Content-Transfer-Encoding` headers. These appear when the commit message contains
+   non-ASCII (UTF-8) characters and will cause rejection on the mailing list.
+   ```bash
+   # Check — should produce no output:
+   grep -E 'MIME-Version|Content-Type|Content-Transfer-Encoding' 0001-*.patch
+   # If it does: fix the commit message to use pure ASCII, then re-generate
+   ```
+6. **Generate submission command**: Run `get_maintainer.pl` and produce the ready-to-use
    `git send-email` command. Include this in the report so the user can copy-paste to submit.
 
 ```bash

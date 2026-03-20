@@ -788,6 +788,12 @@ subsystem: brief description of the fix
 Longer explanation of what the bug is, how it manifests, and why
 this patch fixes it. Use present tense. Include the root cause.
 
+Trigger conditions (required — helps reviewers assess severity):
+- Required CONFIG: CONFIG_NET=y, CONFIG_INET=y
+- Required sysctl: net.ipv4.ip_no_pmtu_disc=3 (non-default)
+- Required privilege: CAP_NET_RAW (raw socket) or root
+- Attack vector: remote (crafted ICMP packet)
+
 Introduce the backtrace naturally (upstream convention):
 
 syzbot reported a null-ptr-deref in icmp_unreach [1]:
@@ -832,6 +838,25 @@ Signed-off-by: <your name> <email>
 | `Acked-by:` | If acked | Subsystem maintainer acknowledgment |
 | `Cc: stable@vger.kernel.org` | If applicable | Request backport to stable trees |
 | `Signed-off-by:` | Yes (last) | Developer Certificate of Origin |
+
+**Trigger conditions in the commit body** (required):
+
+Every commit message should state what's needed to trigger the bug. This helps
+reviewers and stable-tree maintainers assess severity and backport priority.
+
+Include:
+- **Required CONFIG options**: `CONFIG_*` that must be enabled (e.g., `CONFIG_NETFILTER=y`)
+- **Required sysctl / runtime settings**: Non-default settings (e.g., `ip_no_pmtu_disc=3`)
+- **Required privilege**: `capable()` vs `ns_capable()`, specific `CAP_*`, or unprivileged
+- **Attack vector**: local / remote / requires userns / requires specific hardware
+- **Default exposure**: Is this reachable with default kernel config and settings?
+
+Example:
+```
+The bug requires CONFIG_INET=y (default) and the non-default sysctl
+net.ipv4.ip_no_pmtu_disc=3. Triggering requires CAP_NET_RAW for the
+raw socket, or the packet can arrive from the network (remote).
+```
 
 **Backtrace guidelines**:
 - Introduce naturally: `"syzbot reported a <bug-type> in <function> [1]:"` or just paste the

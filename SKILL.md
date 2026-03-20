@@ -263,25 +263,86 @@ If a fix already exists:
 - **Verify the fix** — read the upstream fix to confirm it actually addresses the root cause
 - **Skip to Phase 7** — no need to write a new patch; document the existing fix in the report
 
-**Step 3: Determine the correct base for your patch**
+**Step 3: Two-Stage Workflow — Analyze on Crash Version, Patch on Latest**
 
-The patch must be written against the correct tree and branch:
+This is a **critical distinction** that the skill MUST enforce:
 
-```bash
-# What version are we on?
-git describe --tags --abbrev=0       # e.g., v6.12-rc3
-make kernelversion                    # e.g., 6.12.0-rc3
-
-# Does the crash kernel version match our source?
-# Compare the crash log's kernel version with our tree
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  The crash log says kernel 6.12.77.                             │
+│  Your local tree is also 6.12.x.                                │
+│                                                                  │
+│  WRONG: Write the patch against 6.12.x and call it done.        │
+│  RIGHT: Analyze on 6.12.x, then rebase the fix onto latest      │
+│         mainline/subsystem-tree HEAD before finalizing.           │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-| Crash kernel version | Patch base should be |
-|---|---|
-| Mainline (e.g., 6.12-rc3) | `torvalds/linux.git` master or the matching -rc tag |
-| Stable (e.g., 6.12.76) | `stable/linux.git` linux-6.12.y branch |
-| Distro kernel (e.g., 5.15.0-ubuntu) | Upstream mainline (distros backport from mainline) |
-| net-next / subsystem tree | The corresponding subsystem tree |
+**Stage 1 — Analyze & Reproduce on the crash version**:
+```bash
+# Checkout the crash kernel version for analysis and QEMU reproduction
+git checkout v6.12.77    # or the closest tag
+# Build, boot in QEMU, reproduce the crash, do root cause analysis
+# This ensures you understand the bug in the exact context it was reported
+```
+
+**Stage 2 — Fetch latest code and check before writing the patch**:
+```bash
+# ALWAYS fetch the latest subsystem tree before writing ANY patch
+git fetch origin
+git fetch --tags origin
+
+# Check: does the vulnerable code still exist in the latest version?
+git show origin/master:<path/to/vulnerable/file> | grep '<vulnerable_function>'
+# If the code has been refactored or removed → the bug may be moot in mainline
+
+# Check: has someone already fixed this in the latest tree?
+git log origin/master --oneline -S '<vulnerable_function>' | head -10
+git log origin/master --oneline --grep='<key_keyword>' -- <file> | head -10
+
+# If bug still exists in latest → write patch against latest HEAD:
+git checkout origin/master
+# Or for networking fixes:
+git checkout net/main       # netdev/net.git main branch
+```
+
+**Stage 3 — Write the patch against the latest code**:
+```bash
+# The patch MUST be based on the latest subsystem tree HEAD
+# NOT on the old crash kernel version
+git diff > patch.diff      # your fix, based on latest code
+
+# Verify the fix also applies to the crash version (for QEMU testing)
+git stash
+git checkout v6.12.77
+git stash pop              # if it applies cleanly
+# Or: git cherry-pick / manual port
+```
+
+**Why this matters**:
+- Upstream WILL NOT accept patches based on old stable kernels
+- The code around the bug may have changed (variable renames, refactors, new callers)
+- A patch against 6.12.77 may not apply to 6.15-rc1 at all
+- Even if the patch applies, context lines may differ → `git am` fails
+
+| Crash kernel version | Analyze on | Write patch against |
+|---|---|---|
+| Stable (e.g., 6.12.77) | `v6.12.77` tag | Latest `origin/master` or subsystem HEAD |
+| Mainline (e.g., 6.15-rc3) | `v6.15-rc3` tag | Latest `origin/master` |
+| Distro (e.g., 5.15.0-ubuntu) | Distro source | Upstream mainline HEAD |
+| net-next / subsystem tree | Subsystem HEAD | Subsystem HEAD (already latest) |
+
+**If the local tree is old (e.g., user has 6.12.x but mainline is 6.15)**:
+```bash
+# You MUST update before writing the patch
+git fetch origin
+git log --oneline HEAD..origin/master | wc -l
+# If significantly behind → pull or checkout latest
+
+# Check if the vulnerable file has changed significantly
+git diff v6.12.77..origin/master -- <path/to/file> | diffstat
+# If large diff → the patch context has changed, must write against latest
+```
 
 **Step 4: Record the base commit in the report**
 

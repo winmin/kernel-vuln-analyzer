@@ -695,6 +695,70 @@ After forming your initial assessment, systematically challenge it by asking the
 | Refcount WARNING | Does this eventually lead to a UAF if triggered enough times? | Likely UAF with patience |
 | DoS-only race | With different timing, does the race give a wider window? Can userfaultfd freeze the race? | Possible reliable UAF |
 
+#### "Is the NULL deref masking a UAF?" — The RCU Lifetime Pattern
+
+This is the most commonly missed upgrade path. When you see a NULL deref in
+RCU-protected code, ask: **where did the NULL come from?**
+
+```
+Pattern: RCU object has field cleared before grace period expires
+
+Teardown path (writer):                Read path (RCU reader):
+──────────────────────                 ────────────────────────
+hlist_del_rcu(&obj->node)             rcu_read_lock()
+                                       obj = rcu_dereference(hash[idx])
+obj->ops->destroy(obj)                 │
+  │                                    │  ← obj is valid (RCU protects it)
+  ├─ resource_put(obj->ptr)            │     but obj->ptr is being destroyed
+  ├─ obj->ptr = NULL     ◄── HERE      │
+  │                                    │
+  └─ call_rcu(&obj->rcu, free_fn)      obj->ptr->field  ← NULL DEREF
+                                       rcu_read_unlock()
+```
+
+**The critical question**: What happens in the window BETWEEN `resource_put(obj->ptr)`
+and `obj->ptr = NULL`?
+
+```
+Timeline:
+  T1: resource_put(obj->ptr)  → obj->ptr's refcount drops to 0 → memory freed
+  T2: ───────────────────────── WINDOW: obj->ptr points to FREED MEMORY
+  T3: obj->ptr = NULL         → now it's "safely" NULL
+  T4: call_rcu(free_fn)       → obj itself deferred
+
+  If reader accesses obj->ptr between T1 and T3 → UAF (not NULL deref!)
+  If reader accesses obj->ptr after T3 → NULL deref (the "safe" crash)
+```
+
+**The PoC that crashes with NULL deref is hitting the T3→T4 window.**
+But the T1→T3 window is more dangerous — it's a real UAF where the reader
+follows a dangling pointer to freed memory.
+
+**How to evaluate this**:
+1. Read the teardown code — is there a `put`/`release`/`free` BEFORE the `= NULL`?
+2. If yes: the freed memory could be reallocated with attacker-controlled content
+3. What object is being freed? What slab cache? What size?
+4. Can the attacker spray that cache between T1 and T3?
+5. What fields does the reader dereference? Function pointers? Data?
+
+**Hypothetical example — generic subsystem teardown**:
+```
+some_subsystem_destroy(obj):
+  dev_put(obj->netdev, ...)        ← T1: netdev refcount → 0, memory freed
+  ──────────────────────────────── ← WINDOW: obj->netdev is dangling pointer
+  obj->netdev = NULL               ← T2: "safe" NULL
+  call_rcu(&obj->rcu, obj_free)    ← T3: obj itself deferred
+
+Reader hitting T1-T2 window: obj->netdev → freed memory
+→ if reader dereferences function pointers through it → code execution
+→ MUCH more dangerous than the NULL deref at T2+
+```
+
+Look for this pattern whenever you see a NULL deref in RCU-protected code where
+the NULL comes from an explicit assignment in a teardown/destroy path.
+
+**If you find this pattern, the bug upgrades from "DoS" to "Likely/Highly Exploitable".**
+
 #### "Can I get a different/stronger primitive from the same root cause?"
 
 Think about what happens if you **change the PoC strategy**:
@@ -707,6 +771,8 @@ Think about what happens if you **change the PoC strategy**:
   does another path give a write instead of a read?
 - **Partial trigger**: Instead of fully triggering the crash, can you stop halfway
   and get an info leak or partial corruption?
+- **Win the earlier race window**: If the NULL assignment masks a UAF (see above),
+  can the PoC hit the pre-NULL window instead?
 
 #### "Can this be chained with other bugs?"
 

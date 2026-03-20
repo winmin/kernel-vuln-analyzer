@@ -254,7 +254,16 @@ Start: What does the bug detector report?
 ├── NULL pointer dereference
 │   ├── Offset = 0 → Missing NULL check or init failure
 │   ├── Small offset → Struct field via NULL pointer
-│   │   └── Check: should pointer be non-NULL here? → Possible UAF (freed + zeroed)
+│   │   ├── Check: should pointer be non-NULL here? → Possible UAF (freed + zeroed)
+│   │   └── Check: is the NULL from an explicit `ptr = NULL` assignment?
+│   │       └── YES → RCU LIFETIME BUG: read the teardown path
+│   │           ├── Is there a put/free BEFORE the `= NULL`?
+│   │           │   └── YES → **UAF window exists between free and NULL assignment**
+│   │           │       The NULL deref PoC is hitting the SAFE window (after NULL).
+│   │           │       The DANGEROUS window (after free, before NULL) gives UAF.
+│   │           │       → UPGRADE to UAF. Check what object is freed, what cache,
+│   │           │         what the reader dereferences (func ptrs? data?)
+│   │           └── NO (NULL is the initial state) → genuine missing-init bug
 │   └── Check: is KASAN enabled? If no → could be masked UAF
 │
 ├── General Protection Fault

@@ -112,16 +112,70 @@ gcc -o poc -static -lpthread poc.c   # always static-link for QEMU rootfs
 
 ### 1.3 Identify the Kernel Subsystem and Source Tree
 
-Based on the call stack and file paths in the crash:
+**Do NOT guess the tree from the top-level directory name alone.** Many subsystems have
+independent maintainer trees even though their code lives under a shared parent directory.
+The canonical source of truth is `scripts/get_maintainer.pl` and the `MAINTAINERS` file.
 
-1. Identify the **subsystem** (net, fs, mm, drivers/gpu, sound, etc.)
-2. Determine the correct **git tree** to clone:
-   - Networking bugs → `git://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git` (fixes) or `net-next.git` (features)
-   - General kernel → `git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git`
-   - Subsystem-specific trees — use `MAINTAINERS` file or `scripts/get_maintainer.pl`
-3. Identify the **relevant kernel version** — check if the bug exists in mainline, stable, or LTS
+**Step 1: Run `get_maintainer.pl` on the affected file**
 
-### 1.3 Create the Analysis Plan
+```bash
+./scripts/get_maintainer.pl --scm --web <path/to/affected/file>
+# The "SCM:" line tells you the correct git tree
+# The "W:" line tells you the web page / mailing list
+```
+
+**Step 2: Cross-reference with the subsystem tree mapping**
+
+Some paths are deceptive — always match **most-specific path first**:
+
+| Source path | Subsystem | Git tree (fixes) | Prefix |
+|---|---|---|---|
+| `net/bluetooth/` | Bluetooth | `bluetooth/bluetooth.git` | `PATCH bluetooth` |
+| `net/wireless/`, `drivers/net/wireless/` | WiFi | `wireless/wifi.git` | `PATCH wifi` |
+| `net/mac80211/` | WiFi (mac80211) | `wireless/wifi.git` | `PATCH wifi` |
+| `net/netfilter/`, `net/ipv4/netfilter/` | Netfilter | `netfilter/nf.git` | `PATCH nf` |
+| `net/bridge/` | Bridge | `netdev/net.git` | `PATCH net` |
+| `net/ipv4/`, `net/ipv6/`, `net/core/` | Networking core | `netdev/net.git` | `PATCH net` |
+| `net/sctp/`, `net/dccp/`, `net/tipc/` | Networking | `netdev/net.git` | `PATCH net` |
+| `net/can/` | CAN | `linux-can/linux.git` | `PATCH can` |
+| `net/nfc/` | NFC | `sameo/nfc.git` | `PATCH nfc` |
+| `kernel/bpf/`, `net/bpf/` | BPF | `bpf/bpf.git` | `PATCH bpf` |
+| `drivers/net/ethernet/` | Network drivers | `netdev/net.git` | `PATCH net` |
+| `drivers/bluetooth/` | Bluetooth drivers | `bluetooth/bluetooth.git` | `PATCH bluetooth` |
+| `drivers/gpu/drm/` | DRM/GPU | `drm/drm.git` | `PATCH drm` |
+| `drivers/usb/` | USB | `usb/usb.git` | `PATCH usb` |
+| `sound/` | Sound/ALSA | `tiwai/sound.git` | `PATCH sound` |
+| `fs/ext4/` | ext4 | `tytso/ext4.git` | `PATCH ext4` |
+| `fs/btrfs/` | Btrfs | `kdave/btrfs.git` | `PATCH btrfs` |
+| `fs/xfs/` | XFS | `djwong/xfs-linux.git` | `PATCH xfs` |
+| `mm/` | Memory management | `akpm/mm.git` | `PATCH mm` |
+| `io_uring/` | io_uring | `axboe/linux-block.git` | `PATCH io_uring` |
+| `security/apparmor/` | AppArmor | `jj/linux-apparmor.git` | `PATCH apparmor` |
+| Others | General | `torvalds/linux.git` | `PATCH` |
+
+**The trap**: `net/bluetooth/` is under `net/` but does NOT go to `netdev/net.git`.
+Bluetooth patches go to `bluetooth/bluetooth.git` and are picked by the Bluetooth
+maintainer (Luiz Augusto von Dentz). Eventually they flow through `netdev/net.git`
+into mainline, but patches must be submitted to the Bluetooth tree directly.
+
+```
+WRONG:  net/bluetooth/l2cap_core.c → "this is net/ → netdev/net.git → PATCH net"
+RIGHT:  net/bluetooth/l2cap_core.c → get_maintainer.pl → bluetooth.git → PATCH bluetooth
+```
+
+**Step 3: When in doubt, always trust `get_maintainer.pl`**
+
+```bash
+# It handles all the edge cases in MAINTAINERS
+./scripts/get_maintainer.pl --scm net/bluetooth/l2cap_core.c
+# Output will show bluetooth.git, not net.git
+```
+
+**Step 4: Identify the relevant kernel version**
+- Check if the bug exists in mainline, stable, or LTS
+- Parse from crash log: `grep 'Not tainted' crash.log`
+
+### 1.4 Create the Analysis Plan
 
 Use Plan mode to structure the work. A typical plan:
 
@@ -139,7 +193,7 @@ Use Plan mode to structure the work. A typical plan:
 8. Package report and artifacts
 ```
 
-### 1.4 Subagent Dispatch Strategy
+### 1.5 Subagent Dispatch Strategy
 
 This skill makes heavy use of subagents (the Agent tool) to parallelize work.
 The guiding principle: **plan centrally, execute in parallel, synthesize results**.

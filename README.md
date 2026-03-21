@@ -16,25 +16,29 @@ Given a KASAN crash log, syzbot report, CVE, or kernel panic trace, this skill o
 
 ## Installation
 
-### Method 1: Plugin install (recommended)
-
-If this plugin is registered in a marketplace:
+### Method 1: Plugin marketplace install (recommended)
 
 ```bash
-claude plugin install kernel-vuln-analyzer@<marketplace-name>
+# Step 1: Add the marketplace
+/plugin marketplace add winmin/kernel-vuln-analyzer
+
+# Step 2: Install the plugin
+/plugin install kernel-vuln-analyzer@kernel-vuln-analyzer
 ```
 
-### Method 2: Manual plugin install
+Or via CLI:
+```bash
+claude plugin install kernel-vuln-analyzer@kernel-vuln-analyzer
+```
+
+### Method 2: Direct plugin directory
 
 ```bash
-# Clone the repo
 git clone https://github.com/winmin/kernel-vuln-analyzer.git
-
-# Use it directly as a plugin directory
 claude --plugin-dir ./kernel-vuln-analyzer
 ```
 
-### Method 3: Copy skill files only
+### Method 3: Manual skill copy
 
 ```bash
 git clone https://github.com/winmin/kernel-vuln-analyzer.git

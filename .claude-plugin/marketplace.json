@@ -1,0 +1,22 @@
+{
+  "name": "kernel-vuln-analyzer",
+  "owner": {
+    "name": "winmin"
+  },
+  "metadata": {
+    "description": "Linux kernel vulnerability analysis plugin for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "kernel-vuln-analyzer",
+      "source": ".",
+      "description": "Analyze Linux kernel vulnerabilities from KASAN/UBSAN/BUG crash logs or CVE descriptions. Full root cause analysis, exploitability assessment, patch development, and QEMU verification.",
+      "version": "1.0.0",
+      "author": {
+        "name": "winmin"
+      },
+      "keywords": ["kernel", "vulnerability", "security", "KASAN", "exploit", "patch", "linux"],
+      "category": "security"
+    }
+  ]
+}

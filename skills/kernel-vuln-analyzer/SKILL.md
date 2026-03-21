@@ -1157,6 +1157,50 @@ may confuse subsequent analyses or the user's own work.
 
 ---
 
+## GATE CHECK: Before Entering Phase 7
+
+**DO NOT proceed to Phase 7 (Report Generation) until ALL of the following are confirmed.**
+This is a hard gate — not a suggestion. Skipping QEMU verification invalidates the entire
+analysis because an untested patch may be wrong, incomplete, or introduce regressions.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  VERIFICATION CHECKLIST — all must be YES to proceed to Phase 7    │
+│                                                                     │
+│  [ ] Vulnerable kernel built and booted in QEMU?                    │
+│  [ ] PoC confirmed to crash the vulnerable kernel?                  │
+│  [ ] Patched kernel built from latest upstream code?                │
+│  [ ] Patched kernel booted in QEMU?                                 │
+│  [ ] PoC confirmed to NOT crash the patched kernel?                 │
+│  [ ] dmesg checked for new KASAN/UBSAN/WARNING on patched kernel?   │
+│  [ ] Source tree restored to original state?                        │
+│                                                                     │
+│  If ANY item is NO → DO NOT generate the report.                    │
+│  Instead: fix the missing step, then re-check.                      │
+│                                                                     │
+│  If QEMU environment is unavailable (no qemu-system, no rootfs):    │
+│  → Ask the user for their test environment path                     │
+│  → Or build one using scripts/setup_qemu_env.sh                    │
+│  → NEVER skip verification silently                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Common excuses for skipping verification (all invalid)**:
+
+| Excuse | Why it's wrong |
+|---|---|
+| "The patch is obviously correct" | Obvious patches have hidden bugs. The ICMP fix looked trivial but could have had a `// BUG` comment left in. |
+| "The prove log already showed it crashes" | The prove log tested the VULNERABLE kernel. You need to test the PATCHED kernel. |
+| "I'll test later" | The report will be delivered to the user without verification. They'll trust it. |
+| "QEMU isn't available" | Ask the user. Build one. Don't skip. |
+| "It's just a NULL check" | Even a NULL check can be wrong — wrong variable, wrong scope, wrong return value. |
+
+**If you catch yourself about to write `report.md` without having run QEMU**: STOP.
+Go back to Phase 6.3. Build the kernel. Boot it. Run the PoC. Check dmesg.
+Only then proceed.
+
+---
+
 ## Phase 7: Report Generation & Artifact Packaging
 
 ### 7.1 Output Directory Structure

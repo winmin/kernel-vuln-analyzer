@@ -1,36 +1,49 @@
 # kernel-vuln-analyzer
 
-A Claude Code skill for Linux kernel vulnerability analysis — from crash log triage through root cause analysis, exploitability assessment, patch development, and verified fix delivery.
+A Claude Code plugin for Linux kernel vulnerability analysis — from crash log triage through root cause analysis, exploitability assessment, patch development, and verified fix delivery.
 
 ## What It Does
 
 Given a KASAN crash log, syzbot report, CVE, or kernel panic trace, this skill orchestrates a full 7-phase analysis:
 
-1. **Triage & Planning** — Parse crash logs, identify subsystem, plan analysis with subagents
-2. **Source Acquisition & Static Analysis** — Clone kernel tree, parallel code path analysis via subagents
+1. **Triage & Planning** — Parse crash logs, identify subsystem and correct maintainer tree
+2. **Source Acquisition** — Fetch latest code, two-stage workflow (analyze on crash version, patch on latest)
 3. **Root Cause Analysis** — Complete data flow tracing with ASCII diagrams, distinguish symptoms from true bug class
-4. **Dynamic Analysis** — QEMU + GDB reproduction and confirmation
-5. **Exploitability Assessment** — Rating with kernelCTF cross-reference
-6. **Patch Development & Verification** — Write fix, verify in QEMU, restore source tree
+4. **Dynamic Analysis** — QEMU + GDB reproduction, race condition handling
+5. **Exploitability Assessment** — `capable()` vs `ns_capable()` gate analysis, RCU lifetime UAF detection, challenge initial assessment
+6. **Patch Development & Verification** — Write fix, verify in QEMU, generate `git send-email` command, restore source tree
 7. **Report & Artifacts** — Bilingual (EN/ZH) reports with all artifacts
 
 ## Installation
 
-Copy the skill directory to your Claude Code skills folder:
+### Method 1: Plugin install (recommended)
+
+If this plugin is registered in a marketplace:
 
 ```bash
-cp -r . ~/.claude/skills/kernel-vuln-analyzer/
+claude plugin install kernel-vuln-analyzer@<marketplace-name>
 ```
 
-Or clone directly:
+### Method 2: Manual plugin install
 
 ```bash
-git clone https://github.com/winmin/kernel-vuln-analyzer.git ~/.claude/skills/kernel-vuln-analyzer/
+# Clone the repo
+git clone https://github.com/winmin/kernel-vuln-analyzer.git
+
+# Use it directly as a plugin directory
+claude --plugin-dir ./kernel-vuln-analyzer
+```
+
+### Method 3: Copy skill files only
+
+```bash
+git clone https://github.com/winmin/kernel-vuln-analyzer.git
+cp -r kernel-vuln-analyzer/skills/kernel-vuln-analyzer ~/.claude/skills/
 ```
 
 ## Usage
 
-In Claude Code, the skill triggers automatically when you:
+The skill triggers automatically when you:
 - Paste a KASAN/UBSAN/kernel panic crash log
 - Ask about a kernel CVE
 - Request kernel bug analysis or patch development
@@ -41,33 +54,50 @@ Or invoke directly:
 /kernel-vuln-analyzer <paste crash log or describe the bug>
 ```
 
-## Structure
+## Plugin Structure
 
 ```
-├── SKILL.md                          # Main skill (7-phase workflow)
-├── references/
-│   ├── crash-log-analysis.md         # KASAN/UBSAN/GPF/NULL deref parsing
-│   ├── vuln-classification.md        # Bug taxonomy + decision tree
-│   ├── exploitability-assessment.md  # Exploit primitives, heap techniques, mitigations
-│   ├── patch-writing-guide.md        # Linux kernel patch conventions
-│   ├── qemu-setup.md                # QEMU+GDB environment setup
-│   └── kernelctf-knowledge-base.md  # Exploit techniques from Google kernelCTF
-├── scripts/
-│   ├── parse_kasan_log.py           # Structured crash log parser (JSON output)
-│   ├── setup_qemu_env.sh            # Automated QEMU env builder
-│   ├── run_patch_test.sh            # Automated patch verification
-│   └── generate_report.sh           # Report directory scaffolding
-└── assets/
-    └── report_template.md            # Analysis report template
+kernel-vuln-analyzer/
+├── .claude-plugin/
+│   └── plugin.json                       # Plugin manifest
+├── skills/
+│   └── kernel-vuln-analyzer/
+│       ├── SKILL.md                      # Main skill (7-phase workflow)
+│       ├── references/
+│       │   ├── crash-log-analysis.md     # KASAN/UBSAN/GPF/NULL deref parsing
+│       │   ├── vuln-classification.md    # Bug taxonomy + decision tree
+│       │   ├── exploitability-assessment.md  # Exploit primitives, mitigations, capable vs ns_capable
+│       │   ├── patch-writing-guide.md    # Kernel patch conventions, git send-email, MIME rules
+│       │   ├── qemu-setup.md            # QEMU+GDB environment setup
+│       │   ├── regression-testing.md    # Kselftest, KUnit, LTP
+│       │   ├── syzbot-workflow.md       # Syzbot interaction (#syz test, #syz fix)
+│       │   └── kernelctf-knowledge-base.md  # Exploit techniques from Google kernelCTF
+│       ├── scripts/
+│       │   ├── parse_kasan_log.py       # Structured crash log parser (JSON output)
+│       │   ├── setup_qemu_env.sh        # Automated QEMU env builder
+│       │   ├── run_patch_test.sh        # Automated patch verification
+│       │   └── generate_report.sh       # Report directory scaffolding
+│       └── assets/
+│           └── report_template.md        # Analysis report template
+├── README.md
+└── LICENSE
 ```
 
 ## Key Features
 
 - **Subagent/hive-mode architecture** — Parallel analysis workstreams for speed
-- **Symptom vs. root cause distinction** — e.g., NULL deref that's actually UAF
+- **Symptom vs. root cause distinction** — e.g., NULL deref masking RCU lifetime UAF
+- **Permission gate analysis** — `capable()` vs `ns_capable()` to determine true attack surface
+- **Challenge initial assessment** — Mandatory step to probe for stronger exploitation primitives
 - **ASCII art diagrams** — Protocol structures, struct layouts, call chains with data transformation
-- **Decoded backtrace in commit messages** — Following upstream Linux kernel conventions
+- **Precise subsystem mapping** — `net/bluetooth/` → `bluetooth.git`, not `net.git`
+- **Two-stage workflow** — Analyze on crash version, patch against latest mainline
+- **Decoded backtrace in commit messages** — With `Closes:`, `Link:` tags per upstream conventions
+- **No MIME headers** — Pure ASCII patches ready for kernel mailing list
+- **Auto-generated `git send-email`** — From `get_maintainer.pl` with correct `--subject-prefix`
 - **QEMU verification** — Automated build → boot → PoC → verify cycle
+- **Syzbot integration** — `#syz test`, `#syz fix`, reproducer extraction
+- **Regression testing** — Kselftest writing guide, KUnit, LTP
 - **Source tree restoration** — Non-destructive analysis, source reverted after testing
 - **Bilingual reports** — English and Chinese
 

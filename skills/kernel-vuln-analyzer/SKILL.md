@@ -1438,47 +1438,79 @@ may confuse subsequent analyses or the user's own work.
 
 ---
 
-## GATE CHECK: Before Entering Phase 7
+## GATE CHECK: Before Entering Phase 7 — Evidence Required
 
-**DO NOT proceed to Phase 7 (Report Generation) until ALL of the following are confirmed.**
-This is a hard gate — not a suggestion. Skipping QEMU verification invalidates the entire
-analysis because an untested patch may be wrong, incomplete, or introduce regressions.
+**DO NOT proceed to Phase 7 until you have ACTUAL QEMU OUTPUT as evidence.**
+A mental checklist is not enough. You must have run real commands and captured real output.
 
+The gate check is not "did you think about testing" — it is "show me the QEMU log."
+
+### Required Evidence (must exist before report generation starts)
+
+Before writing any report file, you must have ALL of these **actual artifacts**:
+
+**1. Vulnerable kernel crash log** (`logs/vuln-test.log`)
+- Must contain actual QEMU serial output from booting the vulnerable kernel
+- Must show the PoC running and the kernel crashing
+- Verify: `grep -E 'BUG|KASAN|panic|Oops' logs/vuln-test.log` returns matches
+
+**2. Patched kernel clean log** (`logs/patched-test.log`)
+- Must contain actual QEMU serial output from booting the patched kernel
+- Must show the PoC running and the kernel NOT crashing
+- Verify: `grep -E 'BUG|KASAN|panic|Oops' logs/patched-test.log` returns NOTHING
+
+**3. Patched kernel binaries** (`kernel/patched-bzImage`, `kernel/patched-vmlinux`)
+- Must be actual compiled kernel binaries, not empty files
+- Verify: `file kernel/patched-bzImage` shows "Linux kernel x86 boot executable"
+
+**4. checkpatch output**
+- Must have run `./scripts/checkpatch.pl --strict` on the `.patch` file
+- No errors allowed (warnings may be acceptable with justification)
+
+### How to verify the gate (run these commands)
+
+```bash
+# All 4 checks must pass:
+echo "=== Gate Check ==="
+
+echo -n "1. Vuln crash log: "
+grep -cE 'BUG|KASAN|panic|Oops' report/logs/vuln-test.log 2>/dev/null && echo "PASS" || echo "FAIL — no crash log"
+
+echo -n "2. Patched clean log: "
+[ -f report/logs/patched-test.log ] && \
+  ! grep -qE 'BUG|KASAN|panic|Oops' report/logs/patched-test.log && echo "PASS" || echo "FAIL — crash on patched kernel or no log"
+
+echo -n "3. Patched kernel binary: "
+file report/kernel/patched-bzImage 2>/dev/null | grep -q 'Linux kernel' && echo "PASS" || echo "FAIL — no patched kernel"
+
+echo -n "4. Source restored: "
+git diff --stat 2>/dev/null | grep -q '.' && echo "FAIL — uncommitted changes" || echo "PASS"
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  VERIFICATION CHECKLIST — all must be YES to proceed to Phase 7    │
-│                                                                     │
-│  [ ] Vulnerable kernel built and booted in QEMU?                    │
-│  [ ] PoC confirmed to crash the vulnerable kernel?                  │
-│  [ ] Patched kernel built from latest upstream code?                │
-│  [ ] Patched kernel booted in QEMU?                                 │
-│  [ ] PoC confirmed to NOT crash the patched kernel?                 │
-│  [ ] dmesg checked for new KASAN/UBSAN/WARNING on patched kernel?   │
-│  [ ] Source tree restored to original state?                        │
-│                                                                     │
-│  If ANY item is NO → DO NOT generate the report.                    │
-│  Instead: fix the missing step, then re-check.                      │
-│                                                                     │
-│  If QEMU environment is unavailable (no qemu-system, no rootfs):    │
-│  → Ask the user for their test environment path                     │
-│  → Or build one using scripts/setup_qemu_env.sh                    │
-│  → NEVER skip verification silently                                 │
-└─────────────────────────────────────────────────────────────────────┘
-```
 
-**Common excuses for skipping verification (all invalid)**:
+**If ANY check shows FAIL → you cannot proceed to Phase 7. Go back and fix it.**
+
+### What happens if QEMU is unavailable
+
+If `qemu-system-x86_64` is not installed or the user's environment doesn't have it:
+
+1. **Ask the user**: "I need to verify the patch in QEMU. Where is your test environment?"
+2. **Check for existing QEMU/rootfs**: `which qemu-system-x86_64`, `ls *.cpio.gz`
+3. **Build one**: Run `scripts/setup_qemu_env.sh` to create the environment
+4. **If truly impossible**: Tell the user explicitly: "I was unable to verify the patch
+   in QEMU. The report is UNVERIFIED." Mark the report with a prominent warning banner.
+
+**NEVER silently skip testing and deliver a report as if it were verified.**
+
+### Common excuses for skipping verification (all invalid)
 
 | Excuse | Why it's wrong |
 |---|---|
-| "The patch is obviously correct" | Obvious patches have hidden bugs. The ICMP fix looked trivial but could have had a `// BUG` comment left in. |
-| "The prove log already showed it crashes" | The prove log tested the VULNERABLE kernel. You need to test the PATCHED kernel. |
-| "I'll test later" | The report will be delivered to the user without verification. They'll trust it. |
+| "The patch is obviously correct" | Obvious patches have hidden bugs |
+| "The prove log already showed it crashes" | That tested the VULNERABLE kernel, not the PATCHED one |
+| "I'll test later" | The user will trust the report as-is |
 | "QEMU isn't available" | Ask the user. Build one. Don't skip. |
-| "It's just a NULL check" | Even a NULL check can be wrong — wrong variable, wrong scope, wrong return value. |
-
-**If you catch yourself about to write `report.md` without having run QEMU**: STOP.
-Go back to Phase 6.3. Build the kernel. Boot it. Run the PoC. Check dmesg.
-Only then proceed.
+| "It's just a NULL check" | Even a NULL check can be wrong scope/variable/return |
+| "I already know it works" | You don't know until you see QEMU output with zero crash indicators |
 
 ---
 

@@ -485,14 +485,105 @@ To identify the real root cause:
 3. **Check error paths**: Many kernel bugs live in error handling — a `goto err` that forgets to unlock or drop a reference
 4. **Verify with KASAN alloc/free stacks**: If KASAN provides them, the allocation and free call stacks tell you exactly who created and destroyed the object
 
-### 3.2 Build the Bug Narrative
+### 3.2 Build the Bug Narrative — Source-Level Deep Trace (Required)
 
-Write a clear, chronological description:
-1. Thread A does X, acquiring a reference to object O
-2. Thread B does Y, freeing object O (the bug — missing lock/refcount)
-3. Thread A accesses O → crash
+A shallow narrative ("Thread A frees, Thread B uses" or "missing NULL check") is NOT sufficient.
+After confirming the root cause, you must produce a **source-level deep trace** that combines
+the kernel source code and the PoC's behavior to explain exactly how the bug manifests.
 
-This narrative is essential for the report and for writing a correct patch.
+This trace must be generated **from the actual source code and PoC for each specific bug**.
+The approach varies by vulnerability class — use the matching methodology below.
+
+#### Common Steps (All Vulnerability Types)
+
+**Step A: Map PoC actions to kernel code paths**
+
+Read the PoC and trace what each part does in the kernel:
+- `PoC line/action → syscall/packet → kernel entry function (file.c:line)`
+- For multi-threaded PoCs: which thread does what, and what's the intended race
+
+**Step B: Read the relevant kernel source with file:line citations**
+
+For every function in the call chain from syscall entry to crash:
+- What does it do? What data does it read/write?
+- What validation/checks does it perform (or fail to perform)?
+- What synchronization (locks, RCU, refcount, memory barriers) does it use?
+
+**Step C: Build a timeline/flow diagram from source**
+
+Produce a visual that shows the bug's progression. The format depends on the
+vulnerability class (see below). Use actual function names and file:line references
+from the source, not generic placeholders.
+
+**Step D: Explain why the bug exists**
+
+- What invariant is violated?
+- What mechanism was supposed to prevent this? Why did it fail?
+- Is this a design flaw or an implementation oversight?
+
+#### Per-Vulnerability-Class Methodology
+
+**Choose the methodology that matches your bug's root cause.** Not every bug involves
+refcounts or races — trace what's actually relevant.
+
+**UAF / Double-Free / Refcount bugs**:
+- Trace the object's full refcount lifecycle: creation (init → get) → normal state →
+  destruction (put → release → free), with refcount value at each step
+- Identify who holds each reference and when they release it
+- Show the race timeline (side-by-side CPUs) with refcount transitions as `before→after`
+- Highlight: missing `kref_get_unless_zero`, premature `put`, or unprotected reader
+
+**Race conditions (non-refcount)**:
+- Identify the shared state being raced on (flag, pointer, list, counter)
+- Show the TOCTOU window: what's checked, what changes, what's used
+- Side-by-side CPU timeline showing interleaving that leads to the bug
+- Highlight: missing lock, wrong lock scope, missing memory barrier
+
+**NULL pointer dereference (non-race)**:
+- Trace the data flow: where does the NULL pointer originate?
+- Is it from a failed allocation? A missing initialization? An error path that
+  skips setup? A sparse array lookup (like `inet_protos[]`)?
+- Show the call chain from the point where NULL enters to the crash dereference
+- Highlight: what validation is missing and where it should be
+
+**Out-of-bounds (OOB) read/write**:
+- Trace the buffer allocation: what size, from where, based on what input?
+- Trace the access: what index/offset, from where, based on what input?
+- Show the arithmetic: `allocated_size` vs `accessed_offset` — why does it overflow?
+- If integer overflow: show the multiplication/addition that wraps
+- Highlight: missing bounds check, wrong size calculation, signedness confusion
+
+**Logic bugs / State machine errors**:
+- Map out the state machine: what states exist, what transitions are valid?
+- Show the sequence of operations that reaches an "impossible" state
+- Trace the error path that skips a required state transition
+- Highlight: missing state check, wrong transition order, error path that forgets cleanup
+
+**Info leaks**:
+- Trace the data flow from kernel memory to user space
+- Identify the uninitialized field, padding bytes, or stale pointer
+- Show the struct layout with `pahole` — which bytes are leaked?
+- Highlight: missing memset/initialization, struct padding, wrong copy size
+
+**Type confusion**:
+- Show the two types involved and their different layouts
+- Trace how the object gets cast/reinterpreted as the wrong type
+- Highlight which fields overlap incorrectly (especially function pointers vs data)
+
+#### Quality Criteria (All Types)
+
+- Every source reference has a **file:line** citation
+- The PoC's behavior is mapped to kernel code paths
+- State changes (refcount, lock, flag, pointer) show **before→after** values
+- The crash is traced to a specific struct field and offset
+- There's a clear explanation of **what's broken and why**
+
+#### What to Avoid
+
+- Generic descriptions without source references ("the object is freed then used")
+- Using only one methodology for all bug types (not everything is a refcount race)
+- Skipping the PoC→kernel mapping (the reader needs to understand HOW the bug triggers)
+- Stopping at the crash site without tracing the root cause backwards
 
 ### 3.3 Determine Affected Version Range
 

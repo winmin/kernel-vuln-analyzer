@@ -1398,6 +1398,65 @@ for i in $(seq 1 100); do ./poc; echo "Run $i: exit=$?"; done
 # All 100 runs should complete without crash
 ```
 
+**Phase C: Unprivileged Trigger Test via `unshare` (if applicable)**
+
+If the Phase 5.2 permission gate analysis determined that ALL capability checks in the
+call path use `ns_capable()` (not `capable()`), the bug is reachable from an unprivileged
+user via `unshare(CLONE_NEWUSER|CLONE_NEWNET)`. In this case, you MUST verify this
+claim by actually running the PoC as a non-root user inside QEMU.
+
+**When to run Phase C**: Only when the permission gate analysis concludes
+"unprivileged via userns" — i.e., no `capable()` check blocks the path.
+
+```bash
+# Inside QEMU (on the VULNERABLE kernel), create a non-root user and test:
+
+# 1. Create unprivileged user
+adduser --disabled-password --gecos "" testuser 2>/dev/null || true
+
+# 2. Copy PoC to user's home
+cp /root/poc /home/testuser/poc
+chmod +x /home/testuser/poc
+
+# 3. Run PoC as unprivileged user with unshare
+su testuser -c 'unshare -Urn /home/testuser/poc'
+#                 ^^^^
+#                 -U = CLONE_NEWUSER (new user namespace, get all caps)
+#                 -r = map current user to root in new userns
+#                 -n = CLONE_NEWNET (new network namespace)
+
+# 4. Check result
+dmesg | tail -20
+# If kernel crashes → confirmed: unprivileged trigger via userns
+# If EPERM or no crash → the permission analysis was wrong, re-check
+```
+
+**If the unprivileged trigger succeeds**: This is a significant finding. The report MUST
+include a dedicated section documenting this:
+
+```markdown
+### Unprivileged Trigger Verification
+
+The bug can be triggered by an unprivileged user via user namespaces:
+
+- **Test**: PoC run as non-root user with `unshare -Urn ./poc`
+- **Result**: Kernel crash confirmed — no root privileges required
+- **Permission path**: All checks use `ns_capable()` / `netlink_capable()`
+  → `unshare(CLONE_NEWUSER|CLONE_NEWNET)` grants sufficient capabilities
+- **Impact upgrade**: This is NOT a "requires CAP_NET_ADMIN" bug —
+  it is an unprivileged local DoS/exploit on any system with
+  CONFIG_USER_NS=y and unprivileged_userns_clone=1 (Ubuntu default)
+
+Tested command: `su testuser -c 'unshare -Urn /home/testuser/poc'`
+Log: logs/unpriv-test.log
+```
+
+**If the unprivileged trigger fails** (EPERM): Document that too — it means
+the permission analysis missed a `capable()` check somewhere. Go back to
+Phase 5.2 and find the missing gate.
+
+**Save the log**: `report/logs/unpriv-test.log`
+
 ### 6.4 Regression Check
 
 - Ensure no new KASAN/UBSAN warnings in `patched-test.log`
@@ -1485,9 +1544,17 @@ file report/kernel/patched-bzImage 2>/dev/null | grep -q 'Linux kernel' && echo 
 
 echo -n "4. Source restored: "
 git diff --stat 2>/dev/null | grep -q '.' && echo "FAIL — uncommitted changes" || echo "PASS"
+
+echo -n "5. Unpriv test (if ns_capable path): "
+if [ -f report/logs/unpriv-test.log ]; then
+  echo "PASS — log exists"
+else
+  echo "SKIP (not applicable, or FAIL if ns_capable path was identified)"
+fi
 ```
 
-**If ANY check shows FAIL → you cannot proceed to Phase 7. Go back and fix it.**
+**If checks 1-4 show FAIL → you cannot proceed to Phase 7. Go back and fix it.**
+**Check 5 is required only when Phase 5.2 identified an `ns_capable()` path — if so, FAIL = go back.**
 
 ### What happens if QEMU is unavailable
 

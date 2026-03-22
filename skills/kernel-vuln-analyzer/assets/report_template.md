@@ -51,7 +51,7 @@
 
 ---
 
-## 2.5 Subsystem Background
+### 2.4 Subsystem Background
 
 {{Explain how the affected subsystem works NORMALLY before describing the bug.
 This section helps readers who aren't familiar with the subsystem understand the context.}}
@@ -187,7 +187,7 @@ Do not accept the initial classification without probing deeper.
 3. {{Step 3: e.g., Leak kernel pointer via...}}
 4. {{Step 4: e.g., Overwrite function pointer to achieve code execution...}}
 
-### 5.4 Mitigations
+### 5.6 Mitigations
 
 | Mitigation | Applicable? | Bypassable? |
 |---|---|---|
@@ -197,7 +197,7 @@ Do not accept the initial classification without probing deeper.
 | CFI | {{Yes/No}} | {{Yes/No}} |
 | Slab hardening | {{Yes/No}} | {{Yes/No}} |
 
-### 5.5 Precedent
+### 5.7 Precedent
 
 {{Similar vulnerabilities from kernelCTF or public exploits:}}
 - {{CVE-XXXX-XXXX}}: Similar {{bug type}} in {{subsystem}}, exploited via {{technique}}

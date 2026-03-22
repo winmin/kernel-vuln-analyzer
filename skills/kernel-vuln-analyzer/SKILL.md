@@ -570,20 +570,47 @@ refcounts or races — trace what's actually relevant.
 - Trace how the object gets cast/reinterpreted as the wrong type
 - Highlight which fields overlap incorrectly (especially function pointers vs data)
 
+#### Step E: Visualize Your Analysis with ASCII Diagrams
+
+Diagrams are NOT a separate step — they are the **visual output of the source analysis above**.
+After completing Steps A-D, produce diagrams that summarize what you found. The diagrams must
+reference actual function names and file:line from YOUR analysis, not generic templates.
+
+Generate whichever diagram types are relevant to the bug:
+
+- **Call chain + data transformation**: Show how data flows through each function with
+  `skb->data` / pointer / buffer state at each layer. Each box = actual function (file:line).
+- **Race timeline (for concurrency bugs)**: Side-by-side CPUs with actual function names,
+  refcount/state transitions, and the race window marked.
+- **Struct layout (for OOB/type confusion/info leak)**: pahole-style field offsets showing
+  which field is corrupted/leaked/confused. Use actual struct name from the source.
+- **Packet/data format (for protocol bugs)**: Byte-level layout of attacker input showing
+  which fields are controlled and where validation is missing.
+- **Object lifecycle (for UAF)**: Allocation → use → free → use-after-free with refcount
+  values at each step, referencing actual functions.
+- **State machine (for logic bugs)**: Valid vs actual state transitions.
+- **Memory/slab layout (for heap bugs)**: Slab page showing adjacent objects.
+
+**The diagram must reflect your source code analysis — not be a generic template.**
+For example, a call chain diagram should use the real function names you found in Step B,
+not placeholder names like `function_a()`.
+
 #### Quality Criteria (All Types)
 
 - Every source reference has a **file:line** citation
 - The PoC's behavior is mapped to kernel code paths
 - State changes (refcount, lock, flag, pointer) show **before→after** values
 - The crash is traced to a specific struct field and offset
+- Diagrams use actual function/struct names from the source analysis, not placeholders
 - There's a clear explanation of **what's broken and why**
 
 #### What to Avoid
 
 - Generic descriptions without source references ("the object is freed then used")
+- Drawing diagrams without doing the source analysis first (diagrams are OUTPUT, not INPUT)
 - Using only one methodology for all bug types (not everything is a refcount race)
 - Skipping the PoC→kernel mapping (the reader needs to understand HOW the bug triggers)
-- Stopping at the crash site without tracing the root cause backwards
+- Copying template diagrams instead of generating them from your analysis
 
 ### 3.3 Determine Affected Version Range
 
@@ -608,115 +635,14 @@ Record in the report: `Affected: v3.13 — v6.13 (fixed in v6.14-rc2)`
 
 For stable/LTS impact, check if the fix needs `Cc: stable@vger.kernel.org`.
 
-### 3.4 ASCII Art Diagrams (Required)
+### 3.4 Diagram Reference (Format Examples)
 
-Every root cause analysis MUST include ASCII art diagrams to make complex data flows and
-structures visually clear. Flat text descriptions of protocols, call chains, and memory
-layouts are insufficient — diagrams make the analysis immediately understandable.
+When producing diagrams in Step E above, use these format conventions. These are
+**formatting templates only** — your actual diagrams must use real function names
+and data from your source analysis.
 
-**Required diagrams** (include whichever are relevant):
-
-#### Packet / Data Structure Layout
-
-Show byte-level layout of attacker-controlled input, field offsets, and sizes:
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|Version|  IHL  |    DSCP/ECN   |         Total Length          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|         Identification        |Flags|    Fragment Offset      |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Time to Live | Protocol ←─── |        Header Checksum        |
-+-+-+-+-+-+-+-+-+ ATTACKER      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    Source Address                              |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-#### Kernel Struct Layout (pahole-style)
-
-Show struct field offsets, especially the field involved in the crash:
-
-```
-struct net_protocol {
-    int (*handler)();              /*   0   8 */
-    int (*err_handler)();          /*   8   8 */
-    unsigned int no_policy:1;      /*  16: 0  */
-    unsigned int icmp_strict_      /*  16: 1  */  ← crash dereferences NULL + 0x10
-        tag_validation:1;                            to read this field
-    u32 secret;                    /*  20   4 */
-    /* total size: 24 */
-};
-```
-
-#### Call Chain with Data Transformation
-
-Show how data flows and transforms through each function, not just a list of function names:
-
-```
-ip_rcv()                          skb->data → [Outer IP | ICMP | Inner IP | Payload]
-   │                                           ^^^^^^^^^^
-   │  validates outer IP header                    │
-   ▼                                               │
-ip_local_deliver_finish()         __skb_pull()──────┘
-   │                              skb->data → [ICMP | Inner IP | Payload]
-   │  dispatches via inet_protos[1]                   │
-   ▼                                                  │
-icmp_rcv()                        pskb_pull()─────────┘
-   │                              skb->data → [Inner IP | Payload]
-   │  dispatches via icmp_pointers[3]        ←── ATTACKER CONTROLLED
-   ▼
-icmp_unreach()
-   │  iph = (struct iphdr *)skb->data
-   │  reads iph->protocol (attacker value)
-   ▼
-icmp_tag_validation(proto=253)
-   │  inet_protos[253] → NULL
-   │  NULL->icmp_strict_tag_validation
-   ▼
-╔═══════════════════╗
-║  NULL DEREFERENCE  ║
-╚═══════════════════╝
-```
-
-#### Object Lifecycle (for UAF bugs)
-
-```
-     CPU 0 (Thread A)              CPU 1 (Thread B)
-          │                             │
-    obj = alloc()                       │
-          │                             │
-    obj->refcnt = 1                     │
-          │                        get_ref(obj)
-          │                        obj->refcnt = 2
-          │                             │
-    put_ref(obj)  ─── BUG: ────   put_ref(obj)
-    refcnt = 1        race on     refcnt = 0 → kfree(obj)
-          │           refcnt            │
-    obj->field  ←── UAF! ──────── (freed memory)
-          │
-     ╔════════╗
-     ║ CRASH  ║
-     ╚════════╝
-```
-
-#### Memory / Slab Layout (for heap bugs)
-
-```
-kmalloc-256 slab page:
-┌──────────┬──────────┬──────────┬──────────┐
-│ Object 0 │ Object 1 │ Object 2 │ Object 3 │
-│ (freed)  │ VULN OBJ │ msg_msg  │ (free)   │
-│          │ ←─ UAF ──│← spray ──│          │
-└──────────┴──────────┴──────────┴──────────┘
-                 │          ▲
-                 └── realloc with controlled data
-```
-
-These diagrams are not optional decoration — they are the core of a clear analysis.
-The report should be understandable from the diagrams alone, with the text providing
-additional detail.
+See `references/crash-log-analysis.md` for address interpretation patterns and
+`references/vuln-classification.md` for the bug classification decision tree.
 
 ---
 
@@ -1296,11 +1222,16 @@ Only then proceed.
 
 ### 7.1 Output Directory Structure
 
-Create a self-contained analysis folder:
+Create a self-contained analysis folder. **Generate two separate reports** — one in English
+(`report_en.md`) and one in Chinese (`report_cn.md`). Each report is a complete standalone
+document (not a translation stub that references the other). Technical content (code snippets,
+diffs, struct layouts, ASCII diagrams, shell commands) should be identical in both; only the
+prose (explanations, analysis narrative, table headers) differs by language.
 
 ```
 <CVE-or-bug-id>-analysis/
-├── report.md                    # Full analysis report
+├── report_en.md                 # Full analysis report (English)
+├── report_cn.md                 # Full analysis report (Chinese / 中文)
 ├── poc/
 │   ├── poc.c                    # PoC source code
 │   ├── Makefile                 # PoC build instructions
@@ -1324,9 +1255,15 @@ Create a self-contained analysis folder:
     └── patch-verification.log   # Log showing PoC no longer crashes
 ```
 
-### 7.2 Report Template
+### 7.2 Report Templates
 
-Read `assets/report_template.md` for the full template. The report must include:
+Two templates are provided:
+- `assets/report_template.md` — English template
+- `assets/report_template_cn.md` — Chinese (中文) template
+
+Generate **both** `report_en.md` and `report_cn.md` using their respective templates.
+Do NOT create a single bilingual report with interleaved EN/CN sections — each report must
+be a complete, self-contained document in one language. Both reports must include:
 
 1. **Executive Summary**: One-paragraph overview — what the bug is, severity, exploitability, fix status
 2. **Bug Classification**: Type, affected subsystem, affected versions, CVE (if assigned)

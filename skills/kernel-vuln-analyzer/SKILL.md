@@ -1215,20 +1215,65 @@ raw socket, or the packet can arrive from the network (remote).
 
 ### 6.2 Validate the Patch
 
-1. **checkpatch.pl**: `./scripts/checkpatch.pl --strict 0001-*.patch`
-2. **Compilation**: `make -j$(nproc)` with at least `defconfig` and the relevant config options
-3. **Sparse/smatch** (if available): Static analysis for locking errors
-4. **Subsystem selftests**: `make -C tools/testing/selftests/<subsystem> run_tests`
-5. **No MIME headers**: Verify the generated patch has NO `MIME-Version`, `Content-Type`,
-   or `Content-Transfer-Encoding` headers. These appear when the commit message contains
-   non-ASCII (UTF-8) characters and will cause rejection on the mailing list.
-   ```bash
-   # Check — should produce no output:
-   grep -E 'MIME-Version|Content-Type|Content-Transfer-Encoding' 0001-*.patch
-   # If it does: fix the commit message to use pure ASCII, then re-generate
-   ```
-6. **Generate submission command**: Run `get_maintainer.pl` and produce the ready-to-use
-   `git send-email` command. Include this in the report so the user can copy-paste to submit.
+After `git format-patch` produces the `.patch` file, run ALL of these checks.
+Do NOT skip any — a patch that fails checkpatch or doesn't apply cleanly will
+be rejected by maintainers without review.
+
+**Format validation**:
+
+```bash
+# 1. checkpatch — coding style and commit message format
+./scripts/checkpatch.pl --strict 0001-*.patch
+# Fix ALL errors and warnings. Common issues:
+#   - Line over 80/100 characters
+#   - Missing Signed-off-by
+#   - Trailing whitespace
+#   - Wrong indentation (spaces instead of tabs)
+
+# 2. Patch applicability — verify it applies cleanly to the tree
+git stash   # save current state
+git am --check 0001-*.patch   # dry-run: does it apply?
+# If "patch does not apply" → the patch context is wrong (wrong base commit)
+git stash pop
+
+# 3. Commit message format check
+head -1 0001-*.patch | grep '^From '           # Must start with "From <hash>"
+sed -n '4p' 0001-*.patch                        # Subject line
+# Verify: "Subject: [PATCH <tag>] subsystem: description"
+# Subject should be < 72 characters (after the [PATCH ...] prefix)
+
+# Check body line length (should be < 75 chars, excluding backtrace)
+awk '/^---$/{exit} /^$/{next} length>75{print NR": "length" chars: "$0}' 0001-*.patch
+
+# 4. No MIME headers
+grep -E 'MIME-Version|Content-Type|Content-Transfer-Encoding' 0001-*.patch
+# Should find nothing. If present: commit message has non-ASCII, fix and regenerate.
+
+# 5. Verify required tags are present
+grep -E '^Fixes:|^Signed-off-by:|^Cc:' 0001-*.patch
+# Must have at least Fixes: and Signed-off-by:
+```
+
+**Build validation**:
+
+```bash
+# 6. Compile test — apply patch and build
+git am 0001-*.patch
+make -j$(nproc)   # Must compile without errors
+
+# 7. Sparse (optional but recommended)
+make C=1 <modified-file.o>   # Static analysis for annotation issues
+
+# 8. Subsystem selftests (if they exist)
+make -C tools/testing/selftests/<subsystem> run_tests
+```
+
+**Submission preparation**:
+
+```bash
+# 9. Generate git send-email command with correct recipients
+./scripts/get_maintainer.pl 0001-*.patch
+```
 
 **Patch generation workflow** — the commit message and code change must be bundled together
 via `git commit` + `git format-patch`. Do NOT use `git diff > patch` — that produces a raw
@@ -1287,31 +1332,78 @@ git send-email \
 Read `references/patch-writing-guide.md` § "Find Maintainers and Generate git send-email Command"
 for the full workflow including `tocmd`/`cccmd` auto-configuration.
 
-### 6.3 Verify in QEMU
+### 6.3 Verify in QEMU — Two-Phase PoC Test (Required)
 
-This is the critical verification step — the patch MUST be tested with the PoC:
+Both phases are mandatory. You need to prove: (A) the bug exists, (B) your patch fixes it.
+Save the QEMU serial output from both runs as log files for the report.
 
-1. Build the patched kernel
-2. Boot in QEMU with the same configuration as the vulnerable kernel
-3. Run the PoC — it must NOT crash
-4. Check `dmesg` for any new warnings or errors
-5. Run basic smoke tests to ensure the patched kernel is functional
+**Phase A: Confirm crash on VULNERABLE kernel**
 
 ```bash
-# Boot patched kernel and run PoC
-qemu-system-x86_64 -kernel bzImage-patched -initrd rootfs.cpio.gz \
-  -append "console=ttyS0 nokaslr" -nographic -m 2G -smp 2
+# Build vulnerable kernel (patch NOT applied)
+git stash   # or checkout the un-patched commit
+make -j$(nproc) bzImage
+cp arch/x86/boot/bzImage report/kernel/test-bzImage
+cp vmlinux report/kernel/test-vmlinux
 
-# Inside QEMU:
-./poc_binary
-dmesg | grep -iE "bug|error|warning|kasan|ubsan|panic"
+# Boot and run PoC — capture output
+timeout 60 qemu-system-x86_64 \
+    -kernel report/kernel/test-bzImage \
+    -initrd rootfs.cpio.gz \
+    -append "console=ttyS0 root=/dev/ram rdinit=/init nokaslr oops=panic panic=1" \
+    -nographic -m 2G -smp 2 -no-reboot \
+    2>&1 | tee report/logs/vuln-test.log
+
+# Verify the crash happened:
+grep -E 'BUG|KASAN|panic|Oops|NULL pointer' report/logs/vuln-test.log
+# MUST find crash indicators. If not → PoC doesn't trigger, fix the PoC first.
+```
+
+**Phase B: Confirm NO crash on PATCHED kernel**
+
+```bash
+# Build patched kernel
+git stash pop   # or apply the patch
+make -j$(nproc) bzImage
+cp arch/x86/boot/bzImage report/kernel/patched-bzImage
+cp vmlinux report/kernel/patched-vmlinux
+
+# Boot and run PoC — capture output
+timeout 60 qemu-system-x86_64 \
+    -kernel report/kernel/patched-bzImage \
+    -initrd rootfs.cpio.gz \
+    -append "console=ttyS0 root=/dev/ram rdinit=/init nokaslr oops=panic panic=1" \
+    -nographic -m 2G -smp 2 -no-reboot \
+    2>&1 | tee report/logs/patched-test.log
+
+# Verify NO crash:
+grep -E 'BUG|KASAN|panic|Oops|NULL pointer' report/logs/patched-test.log
+# MUST find nothing. If crash indicators appear → patch is wrong, go back to 6.1.
+
+# Also check for new warnings introduced by the patch:
+grep -iE 'WARNING|lockdep|RCU' report/logs/patched-test.log
+# Any new warnings → investigate. Your patch may have introduced a regression.
+```
+
+**What to include in the report**:
+- `logs/vuln-test.log` — full serial output from Phase A (shows crash)
+- `logs/patched-test.log` — full serial output from Phase B (shows clean run)
+- Summary: "Vulnerable kernel: CRASH at <function>. Patched kernel: PoC ran, no crash, clean dmesg."
+
+**For race condition bugs**: Run the PoC in a loop on the patched kernel to verify
+the fix is robust, not just lucky timing:
+```bash
+# Inside QEMU on patched kernel:
+for i in $(seq 1 100); do ./poc; echo "Run $i: exit=$?"; done
+# All 100 runs should complete without crash
 ```
 
 ### 6.4 Regression Check
 
-- Ensure no new KASAN/UBSAN warnings appear
+- Ensure no new KASAN/UBSAN warnings in `patched-test.log`
 - If the subsystem has selftests, run them on the patched kernel
 - Test edge cases: what happens at the boundaries of your fix?
+- For race condition fixes: verify with `-smp 4` and stress testing
 
 ### 6.5 Restore Source Tree (Required)
 

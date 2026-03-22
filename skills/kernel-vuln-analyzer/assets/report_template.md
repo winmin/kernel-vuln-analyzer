@@ -164,21 +164,52 @@ Trace every capability check from syscall entry to the vulnerable code:
 - **Controllability**: {{How much control does the attacker have?}}
 - **Timing**: {{Is the race window wide enough?}}
 
-### 5.4 Alternative Exploitation Analysis
+### 5.4 Root-Cause Path Enumeration
 
-Do not accept the initial classification without probing deeper.
+Do not limit analysis to the single path the PoC crashes on. The root cause — the underlying
+invariant violation — may manifest at multiple code sites, each yielding a different primitive.
+
+**Root cause pattern**: {{Precise description of the invariant violation, NOT "crash in function X"}}
+
+#### All affected code sites
+
+| # | Function (Line) | Context | Guard present? | Vulnerable? |
+|---|---|---|---|---|
+| 1 | `{{func_a()}}` L{{NNN}} | {{workqueue / softirq / process}} | {{No}} | **YES** |
+| 2 | `{{func_b()}}` L{{NNN}} | {{process ctx}} | {{Yes (kref_get_unless_zero)}} | No |
+| ... | ... | ... | ... | ... |
+
+#### Per-path primitive analysis
+
+**Path {{N}}: `{{func}}()` ({{context}})**
+- Operations after vulnerable access: {{what the code does with the object}}
+- Primitive: {{DoS / info leak / UAF / arbitrary write / code exec}}
+- Race window: {{width, widenable via userfaultfd/FUSE/CPU pinning?}}
+- Spray target: {{slab cache, object size, feasibility}}
+- Pre-crash windows (teardown timing): {{T1: put/free → T2: ptr=NULL → T3: kfree_rcu. Which window does attacker hit?}}
+
+{{Repeat for each vulnerable path}}
+
+#### Strongest primitive across all paths
+
+{{The most dangerous path is #N because... / All paths yield DoS only because...}}
+
+### 5.5 Alternative Exploitation Analysis
+
+Systematically challenge the initial assessment by probing deeper.
 
 **Challenges considered**:
-1. Could this be a UAF masked as NULL deref? — {{Yes/No: reasoning}}
-2. Is the faulting offset/address controllable? — {{Yes/No: reasoning}}
-3. Does different timing yield a stronger primitive? — {{Yes/No: reasoning}}
-4. Does a different code path give write instead of read? — {{Yes/No: reasoning}}
+1. Could this be a UAF masked as NULL deref? — {{Yes/No: cite specific lock/teardown analysis}}
+2. Is the faulting offset/address controllable? — {{Yes/No: trace the offset origin}}
+3. Does different timing yield a stronger primitive (pre-NULL vs post-NULL window)? — {{Yes/No: analyze teardown sequence step by step}}
+4. Does a different code path give write instead of read? — {{Yes/No: reference path enumeration above}}
 5. Can this chain with another bug (info leak + this)? — {{Yes/No: reasoning}}
 6. Without CONFIG_INIT_ON_FREE / KASAN — does behavior change? — {{Yes/No: reasoning}}
+7. Can userfaultfd/FUSE widen the race window? — {{Yes/No: reasoning}}
 
-**Conclusion**: {{Initial assessment stands / upgraded to X because Y}}
+**Conclusion**: {{Initial assessment stands / upgraded to X because path #N gives Y primitive}}
 
-### 5.5 Exploitation Path
+### 5.6 Exploitation Path
 
 {{If exploitable, describe the theoretical exploitation path:}}
 
@@ -187,7 +218,7 @@ Do not accept the initial classification without probing deeper.
 3. {{Step 3: e.g., Leak kernel pointer via...}}
 4. {{Step 4: e.g., Overwrite function pointer to achieve code execution...}}
 
-### 5.6 Mitigations
+### 5.7 Mitigations
 
 | Mitigation | Applicable? | Bypassable? |
 |---|---|---|
@@ -197,7 +228,7 @@ Do not accept the initial classification without probing deeper.
 | CFI | {{Yes/No}} | {{Yes/No}} |
 | Slab hardening | {{Yes/No}} | {{Yes/No}} |
 
-### 5.7 Precedent
+### 5.8 Precedent
 
 {{Similar vulnerabilities from kernelCTF or public exploits:}}
 - {{CVE-XXXX-XXXX}}: Similar {{bug type}} in {{subsystem}}, exploited via {{technique}}

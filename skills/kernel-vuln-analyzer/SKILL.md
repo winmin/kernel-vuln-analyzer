@@ -459,7 +459,7 @@ Launch these in parallel:
 This is the most critical phase. The symptom (what the crash log shows) often differs from
 the actual bug.
 
-### Common Symptom-vs-Root-Cause Mismatches
+**Common Symptom-vs-Root-Cause Mismatches**:
 
 | Crash Symptom | Possible True Root Cause |
 |---|---|
@@ -907,20 +907,123 @@ the NULL comes from an explicit assignment in a teardown/destroy path.
 
 **If you find this pattern, the bug upgrades from "DoS" to "Likely/Highly Exploitable".**
 
-#### "Can I get a different/stronger primitive from the same root cause?"
+#### "Can I get a different/stronger primitive from the same root cause?" — Root-Cause-Driven Path Enumeration (Required)
 
-Think about what happens if you **change the PoC strategy**:
+**This is the most critical and most often skipped step in exploitability assessment.**
 
-- **Different timing**: The current PoC crashes immediately, but what if you delay
-  the second operation? Could you get a UAF instead of a NULL deref?
-- **Different object size**: Can you control the allocation size to land in a more
-  useful slab cache?
-- **Different protocol/path**: The bug might be reachable through multiple code paths —
-  does another path give a write instead of a read?
-- **Partial trigger**: Instead of fully triggering the crash, can you stop halfway
-  and get an info leak or partial corruption?
-- **Win the earlier race window**: If the NULL assignment masks a UAF (see above),
-  can the PoC hit the pre-NULL window instead?
+The PoC crashes on ONE code path. But the root cause — the underlying invariant violation —
+may be reachable through MULTIPLE code paths, each yielding a different primitive.
+You MUST enumerate all paths, not just analyze the crash path.
+
+**The methodology is: Root Cause → All Affected Sites → Per-Site Primitive → Pick Strongest.**
+
+##### Step 1: Precisely define the root cause as a pattern
+
+Do NOT define the root cause as "crash in function X". Define it as the abstract invariant
+violation that CAUSES the crash. Examples:
+
+| Bad (crash-specific) | Good (root-cause pattern) |
+|---|---|
+| "NULL deref in `subsystem_periodic_scan`" | "Any RCU traversal of the object hash that dereferences `obj->parent` without first taking a reference via `kref_get_unless_zero()` can observe an object with refcount=0 and cleared parent pointer" |
+| "UAF in `subsystem_add_entry`" | "Any path that holds a stale pointer to an entry across a transaction commit/abort boundary can access freed memory" |
+| "OOB write in `subsystem_set_params`" | "Any path that uses user-provided parameters without validating `count * element_size` against the allocated buffer can write past the buffer" |
+
+The pattern definition determines your search scope. Be precise.
+
+##### Step 2: Find ALL code sites matching the pattern
+
+Use grep/Explore agents to systematically enumerate every site:
+
+```bash
+# Find all callers of the function that dereferences the unsafe pointer
+grep -rn '<unsafe_function_name>' <subsystem_dir>/
+
+# Find all RCU traversals of the hash that DON'T use kref_get_unless_zero
+grep -rn 'hlist_for_each_entry_rcu.*<object_type>' <subsystem_dir>/
+```
+
+For each call site found, classify it:
+
+| Site | Context | Has refcount guard? | Vulnerable? |
+|---|---|---|---|
+| `periodic_scanner()` LNNN | workqueue (periodic) | No | **YES** |
+| `hash_find_helper()` LNNN | various callers | Yes (`kref_get_unless_zero`) | No |
+| `packet_rx_handler()` LNNN | packet RX path | Via `hash_find` | No |
+| ... | ... | ... | ... |
+
+**Do NOT stop at the first vulnerable site.** Exhaustively check every site.
+
+##### Step 3: For each vulnerable site, analyze the exploitation primitive
+
+For every site marked "Vulnerable" in step 2, answer:
+
+1. **What context does this code run in?**
+   - Process context? → attacker can control scheduling, use userfaultfd
+   - softirq/IRQ? → preemption disabled, harder to race but no context switch
+   - Workqueue? → process context with possible sleep points
+
+2. **What operations does this code perform on the vulnerable object?**
+   - Read a field → info leak primitive?
+   - Write a field → corruption primitive?
+   - Dereference a pointer → if controllable, arbitrary read/write?
+   - Call a function pointer → code execution?
+   - Compare fields → bypass of security check?
+   - Copy data to userspace → info leak to attacker?
+
+3. **What objects/resources does this code touch AFTER the vulnerable access?**
+   - Even if the initial access is a crash, is there a code path where the
+     vulnerable access succeeds (non-NULL, valid memory) and continues to
+     do something useful to the attacker?
+
+4. **Can the attacker control what's in the freed/corrupted memory?**
+   - What slab cache is the freed object in?
+   - What's the object size? → which kmalloc bucket?
+   - Can the attacker spray that cache via `msg_msg`, `sk_buff`, `setxattr`, etc.?
+   - If so, what fake field values would give the attacker a useful primitive?
+
+5. **What is the race window width?**
+   - Back-to-back instructions → very narrow, but userfaultfd/FUSE can help
+   - Separated by lock acquire → lock contention can widen the window
+   - Separated by blocking operation → wide window, easy to exploit
+
+##### Step 4: Cross-path comparison — find the strongest primitive
+
+Build a summary table:
+
+```markdown
+| Vulnerable path | Primitive | Controllability | Race window | Verdict |
+|---|---|---|---|---|
+| `periodic_scanner` (workqueue) | NULL deref → DoS | None | periodic interval | DoS only |
+| `packet_handler` (if vulnerable) | Read parent fields → info leak? | Spray-dependent | Per-packet | Potential info leak |
+| `teardown_helper` (put-before-del) | UAF if obj freed while in hash | Spray target cache | Lock-width | Potential UAF |
+```
+
+The strongest primitive across ALL paths is the bug's true exploitability ceiling.
+
+##### Step 5: Analyze pre-crash windows on the strongest path
+
+For the most promising path, trace the exact teardown sequence and identify
+ALL timing windows (not just the one the PoC hits):
+
+```
+Teardown sequence for the strongest vulnerable path:
+
+T0: [precondition]      — attacker sets up the race
+T1: resource_put()      — object freed, pointer dangling ← UAF WINDOW OPENS
+T2: ptr = NULL          — pointer cleared               ← NULL WINDOW (PoC crashes here)
+T3: call_rcu(free_fn)   — parent object deferred free   ← MEMORY FREED AFTER GRACE PERIOD
+
+Attacker wants to hit T1→T2 (UAF), not T2→T3 (NULL deref).
+```
+
+For each window, assess:
+- How wide is it? (instructions? microseconds? milliseconds?)
+- Can it be widened by the attacker? (CPU pinning, interrupt flooding, lock contention)
+- Can `userfaultfd` or `FUSE` freeze a page fault in the middle to hold the window open?
+- What specific slab object can be sprayed into the freed slot during this window?
+
+**The goal is not to confirm the PoC's crash — it's to find the strongest possible
+primitive from the root cause across all affected code paths.**
 
 #### "Can this be chained with other bugs?"
 
@@ -945,23 +1048,52 @@ Even a "DoS-only" bug can be valuable in a chain:
 
 #### Document your reasoning
 
-In the report, include a section like:
+In the report, include a **full path enumeration section** like:
 
 ```markdown
+### Root-Cause Path Enumeration
+
+Root cause pattern: {{precise description of the invariant violation}}
+
+#### All affected code sites
+
+| # | Function (Line) | Context | Refcount guard? | Vulnerable? |
+|---|---|---|---|---|
+| 1 | `func_a()` L123 | workqueue | No | **YES** |
+| 2 | `func_b()` L456 | process ctx | Yes (kref_get_unless_zero) | No |
+| 3 | `func_c()` L789 | softirq | No | **YES** |
+
+#### Per-path primitive analysis
+
+**Path 1: `func_a()` (workqueue context)**
+- Operations after vulnerable access: {{what the code does with the object}}
+- Primitive: {{DoS / info leak / UAF / arbitrary write / code exec}}
+- Race window: {{width, widenable?}}
+- Spray target: {{slab cache, object size, feasibility}}
+
+**Path 3: `func_c()` (softirq context)**
+- Operations after vulnerable access: {{...}}
+- Primitive: {{...}}
+- Race window: {{...}}
+- Spray target: {{...}}
+
+#### Strongest primitive across all paths
+
+{{The most dangerous path is #N because... / All paths are DoS-only because...}}
+
 ### Alternative Exploitation Analysis
 
-Initial assessment: NULL pointer dereference → DoS only
+Initial assessment: {{initial primitive}} → {{initial impact}}
 
 Challenges considered:
-1. Could this be a UAF? — No: inet_protos[] is a static global array, not a heap object.
-   No allocation/free lifecycle exists.
-2. Is the offset controllable? — No: always dereferences NULL + 0x10 regardless of
-   attacker-chosen protocol number. All unregistered protocols produce the same NULL.
-3. Different timing? — No: this is a single-packet, single-path crash. No race involved.
-4. Chain potential? — Low: the crash is in softirq context and is immediately fatal.
-   No opportunity for continued execution after the fault.
+1. Could this be a UAF? — {{Yes/No: specific reasoning citing lock/teardown analysis}}
+2. Is the offset controllable? — {{Yes/No: trace where the offset comes from}}
+3. Different timing (pre-NULL vs post-NULL window)? — {{Yes/No: analyze teardown sequence}}
+4. Different trigger path? — {{Yes/No: reference path enumeration above}}
+5. Chain potential? — {{Yes/No: what would be needed}}
+6. Different kernel config? — {{Yes/No: INIT_ON_FREE, USERFAULTFD, mmap_min_addr}}
 
-Conclusion: DoS assessment stands. No viable path to stronger primitive.
+Conclusion: {{Assessment stands / upgraded to X because path #N gives Y primitive}}
 ```
 
 **If you find a stronger primitive**, update the rating and exploitation path accordingly.

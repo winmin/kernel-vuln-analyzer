@@ -1230,11 +1230,51 @@ raw socket, or the packet can arrive from the network (remote).
 6. **Generate submission command**: Run `get_maintainer.pl` and produce the ready-to-use
    `git send-email` command. Include this in the report so the user can copy-paste to submit.
 
-```bash
-# Generate patch file
-git format-patch -1 --subject-prefix="PATCH net"
+**Patch generation workflow** — the commit message and code change must be bundled together
+via `git commit` + `git format-patch`. Do NOT use `git diff > patch` — that produces a raw
+diff without the commit message, tags, or authorship info.
 
-# Get maintainers and mailing lists, then build the send command
+```bash
+# Step 1: Stage the fix
+git add <modified-files>
+
+# Step 2: Commit with the full message (body + backtrace + tags)
+#         Use a heredoc to preserve formatting
+git commit -m "$(cat <<'COMMIT_EOF'
+subsystem: brief description of the fix
+
+Root cause explanation...
+
+Trigger conditions:
+- Required CONFIG: ...
+- Required privilege: ...
+
+syzbot reported a <bug-type> in <function> [1]:
+
+ <decoded backtrace, indented with single space>
+
+<explanation of the fix>
+
+[1] https://syzkaller.appspot.com/bug?extid=...
+
+Fixes: <12-char-hash> ("introducing commit title")
+Reported-by: <name> <email>
+Closes: <bug report URL>
+Cc: stable@vger.kernel.org
+Signed-off-by: <your name> <email>
+COMMIT_EOF
+)"
+
+# Step 3: Generate the patch file with correct subject prefix
+git format-patch -1 --subject-prefix="PATCH <tag>"
+# This produces: 0001-subsystem-brief-description.patch
+# The file contains: From/Date/Subject headers + commit message + diff
+
+# Step 4: Verify the patch
+head -30 0001-*.patch    # Should show From, Date, Subject, blank line, body
+grep -E 'MIME-Version|Content-Type' 0001-*.patch   # Should find nothing
+
+# Step 5: Get maintainers and build the send command
 ./scripts/get_maintainer.pl 0001-*.patch
 
 # Auto-generate git send-email with correct recipients

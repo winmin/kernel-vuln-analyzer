@@ -1261,12 +1261,10 @@ subsystem: brief description of the fix
 
 Longer explanation of what the bug is, how it manifests, and why
 this patch fixes it. Use present tense. Include the root cause.
-
-Trigger conditions (required — helps reviewers assess severity):
-- Required CONFIG: CONFIG_NET=y, CONFIG_INET=y
-- Required sysctl: net.ipv4.ip_no_pmtu_disc=3 (non-default)
-- Required privilege: CAP_NET_RAW (raw socket) or root
-- Attack vector: remote (crafted ICMP packet)
+Weave in the trigger conditions naturally — what config is needed,
+what privilege, whether it's reachable remotely or locally — so
+reviewers and stable maintainers can assess severity from the
+description itself.
 
 Introduce the backtrace naturally (upstream convention):
 
@@ -1313,23 +1311,28 @@ Signed-off-by: <your name> <email>
 | `Cc: stable@vger.kernel.org` | If applicable | Request backport to stable trees |
 | `Signed-off-by:` | Yes (last) | Developer Certificate of Origin |
 
-**Trigger conditions in the commit body** (required):
+**Trigger conditions** (convey naturally in the commit body, not as a structured list):
 
-Every commit message should state what's needed to trigger the bug. This helps
-reviewers and stable-tree maintainers assess severity and backport priority.
+The commit message should make clear what's needed to trigger the bug — required
+CONFIG options, privilege level, whether it's local or remote, and whether the
+default config is affected. This helps reviewers and stable maintainers assess
+severity and backport priority. Weave this information into the natural prose
+description of the bug, the way upstream commits do. Do NOT use a bullet-point
+"Trigger conditions:" section — that format is not used upstream.
 
-Include:
-- **Required CONFIG options**: `CONFIG_*` that must be enabled (e.g., `CONFIG_NETFILTER=y`)
-- **Required sysctl / runtime settings**: Non-default settings (e.g., `ip_no_pmtu_disc=3`)
-- **Required privilege**: `capable()` vs `ns_capable()`, specific `CAP_*`, or unprivileged
-- **Attack vector**: local / remote / requires userns / requires specific hardware
-- **Default exposure**: Is this reachable with default kernel config and settings?
-
-Example:
+Good (natural prose):
 ```
-The bug requires CONFIG_INET=y (default) and the non-default sysctl
-net.ipv4.ip_no_pmtu_disc=3. Triggering requires CAP_NET_RAW for the
-raw socket, or the packet can arrive from the network (remote).
+The bug is reachable from an unprivileged user namespace on any kernel
+with CONFIG_NETFILTER=y (default). A crafted nfnetlink message triggers
+a use-after-free in nf_tables_newrule().
+```
+
+Bad (structured list — not upstream style):
+```
+Trigger conditions:
+- Required CONFIG: CONFIG_NETFILTER=y
+- Required privilege: unprivileged via userns
+- Attack vector: local (nfnetlink)
 ```
 
 **Backtrace guidelines**:
@@ -1416,11 +1419,9 @@ git add <modified-files>
 git commit -m "$(cat <<'COMMIT_EOF'
 subsystem: brief description of the fix
 
-Root cause explanation...
-
-Trigger conditions:
-- Required CONFIG: ...
-- Required privilege: ...
+Root cause explanation — naturally mention what config, privilege,
+and attack vector are needed to trigger the bug, so reviewers can
+assess severity from the description.
 
 syzbot reported a <bug-type> in <function> [1]:
 

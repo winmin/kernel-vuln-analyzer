@@ -24,12 +24,17 @@ a phase can run in parallel via subagents.
 
 ```
 Phase 1: Triage & Planning ──→ Phase 2: Source Acquisition
+    │                              │
+    │ [1.0: Source Version Check]  │ [GATE: Source Version Verified]
     ↓                              ↓
 Phase 3: Root Cause Analysis ←── Phase 4: Dynamic Analysis (QEMU+GDB)
     ↓
 Phase 5: Exploitability Assessment
     ↓
 Phase 6: Patch Development & Verification
+    │
+    │ [6.1: Source Version Re-check]
+    │ [GATE: QEMU Evidence Required]
     ↓
 Phase 7: Report Generation & Artifact Packaging
 ```
@@ -42,6 +47,39 @@ Phase 7: Report Generation & Artifact Packaging
 
 Before writing a single line of analysis, enter Plan mode and create a structured plan.
 This is non-negotiable — kernel bugs are complex and a wrong turn wastes significant time.
+
+### 1.0 Verify Source Tree Is Current (FIRST — Before Anything Else)
+
+**This is a BLOCKING prerequisite.** Before parsing the bug report, before reading source
+code, before planning — verify the kernel source tree is up-to-date. This takes 5 seconds
+and prevents all downstream version mismatch issues.
+
+```bash
+# Step 1: Fetch latest from remote
+cd /path/to/kernel-src
+git fetch origin --tags
+
+# Step 2: Check how far behind we are
+BEHIND=$(git log --oneline HEAD..origin/master | wc -l)
+LATEST_TAG=$(git describe --tags --abbrev=0 origin/master 2>/dev/null || echo "unknown")
+CURRENT=$(git describe --tags HEAD 2>/dev/null || echo "unknown")
+echo "Current: $CURRENT | Latest upstream: $LATEST_TAG | Commits behind: $BEHIND"
+
+# Step 3: If behind → update to latest tag
+if [ "$BEHIND" -gt 0 ]; then
+    echo "WARNING: Local tree is $BEHIND commits behind upstream ($LATEST_TAG)"
+    echo "Updating to latest tag..."
+    git checkout "$LATEST_TAG"
+fi
+
+# Step 4: Record the base for the report
+echo "Analysis base: $(git describe --tags HEAD)"
+```
+
+**DO NOT proceed to Phase 1.1 until the source tree is on the latest upstream tag.**
+
+If `git fetch` fails (no network, wrong remote), warn the user and document that the
+analysis is based on a potentially stale tree. But ALWAYS attempt the fetch first.
 
 ### 1.1 Parse the Input
 
@@ -431,6 +469,67 @@ which tree state it was developed against.
 - `git fetch && git log HEAD..origin/master --oneline` is fast and catches stale trees
 - If the tree is weeks/months behind, warn the user before proceeding
 
+---
+
+## GATE CHECK: Before Entering Phase 3 — Source Version Verified
+
+**DO NOT proceed to Phase 3 (Root Cause Analysis) until the source tree version is verified.**
+This gate ensures you are analyzing and will patch against the correct code.
+
+### Required Checks (must ALL pass)
+
+```bash
+echo "=== Source Version Gate Check ==="
+
+# 1. Was remote fetched?
+echo -n "1. Remote fetched: "
+git fetch origin --tags 2>&1 | tail -1
+echo "DONE"
+
+# 2. What is the latest upstream tag?
+echo -n "2. Latest upstream tag: "
+LATEST=$(git describe --tags --abbrev=0 origin/master 2>/dev/null)
+echo "$LATEST"
+
+# 3. Are we on or ahead of the latest tag?
+echo -n "3. Source version: "
+BEHIND=$(git log --oneline HEAD..origin/master 2>/dev/null | wc -l)
+if [ "$BEHIND" -eq 0 ]; then
+    echo "PASS — up to date ($(git describe --tags HEAD))"
+else
+    echo "FAIL — $BEHIND commits behind $LATEST"
+    echo "   → Run: git checkout $LATEST"
+fi
+
+# 4. Has the vulnerable file changed between current HEAD and latest?
+echo -n "4. Vulnerable file changed since HEAD? "
+VFILE="<path/to/vulnerable/file>"
+CHANGES=$(git diff --stat HEAD..origin/master -- "$VFILE" 2>/dev/null | grep -c '|')
+if [ "$CHANGES" -eq 0 ]; then
+    echo "PASS — no changes"
+else
+    echo "WARNING — file changed, MUST patch against latest"
+fi
+
+# 5. Bug already fixed upstream?
+echo -n "5. Already fixed upstream? "
+git log origin/master --oneline -S '<vulnerable_function>' -- "$VFILE" | head -3
+```
+
+**If check 3 shows FAIL → checkout the latest tag before proceeding.**
+**If check 5 shows a fix already exists → report the existing fix, skip to Phase 7.**
+
+### Common Mistakes This Gate Prevents
+
+| Mistake | Consequence | This gate catches it |
+|---|---|---|
+| Patching against stale tree | Patch may not apply to mainline | Check 3 |
+| Missing a context change | Patch applies but is semantically wrong | Check 4 |
+| Duplicate work | Bug already fixed upstream | Check 5 |
+| Wrong version in report | Report claims wrong "latest affected" | Check 2 |
+
+---
+
 ### 2.3 Static Analysis (Spawn as Subagents)
 
 Launch these in parallel:
@@ -508,6 +607,16 @@ For every function in the call chain from syscall entry to crash:
 - What does it do? What data does it read/write?
 - What validation/checks does it perform (or fail to perform)?
 - What synchronization (locks, RCU, refcount, memory barriers) does it use?
+
+**Step B.1: Verify reachability — trace call-chain preconditions**
+
+For each code site identified as vulnerable, verify that the bad state can actually
+occur there. Trace the full call chain backwards and identify all preconditions that
+must hold for execution to reach that site: feature flags, device configuration
+constraints, creation-time validation, compile-time guards, caller-enforced invariants.
+If a precondition already guarantees the state is valid at that site, the site is not
+truly vulnerable — exclude it from the fix. Do NOT assume symmetry (e.g., "if the IPv6
+path needs a fix, the IPv4 path must too") without proving each case independently.
 
 **Step C: Build a timeline/flow diagram from source**
 
@@ -1114,6 +1223,21 @@ Rate as one of:
 
 ### 6.1 Write the Patch
 
+**STOP — Confirm source version before writing ANY patch code:**
+
+```bash
+echo -n "Patch base: " && git describe --tags HEAD
+LATEST=$(git describe --tags --abbrev=0 origin/master 2>/dev/null)
+echo "Latest upstream: $LATEST"
+BEHIND=$(git log --oneline HEAD..origin/master 2>/dev/null | wc -l)
+[ "$BEHIND" -gt 0 ] && echo "ERROR: $BEHIND commits behind — checkout $LATEST first!" && exit 1
+echo "OK — source is current, safe to write patch"
+```
+
+**If HEAD is behind origin/master → go back to Phase 2.2 and update the tree.**
+Do NOT write a patch against stale source. This check takes 2 seconds and prevents
+rejected patches and wrong report metadata.
+
 Read `references/patch-writing-guide.md` for Linux kernel patch conventions.
 
 **Core principles**:
@@ -1122,6 +1246,10 @@ Read `references/patch-writing-guide.md` for Linux kernel patch conventions.
 - Follow the existing code style of the file you're modifying
 - Add appropriate locking, reference counting, or lifetime management
 - Consider all callers — your fix must not break other code paths
+- **Verify each fix point is necessary**: For every guard you add, prove the bad state
+  can actually reach that site (see Phase 3, Step B.1). Do NOT add symmetric or
+  defensive fixes "for completeness" without proving reachability independently.
+  Unnecessary fixes waste reviewer time and signal a shallow analysis.
 
 **Commit message format**:
 

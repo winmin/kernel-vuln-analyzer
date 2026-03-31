@@ -258,7 +258,6 @@ The decoded backtrace goes here, indented with one space:
 Fixes: abc123def456 ("the commit that introduced the bug")
 Reported-by: Name <email>
 Tested-by: Name <email>
-Cc: stable@vger.kernel.org   # If it should be backported
 Signed-off-by: Your Name <your@email.com>
 ```
 
@@ -305,13 +304,15 @@ Remove from the commit message:
 - **Link**: lore.kernel.org URL to the mailing list discussion thread
 - **Tested-by**: Who tested the patch (can be `syzbot+<hash>@syzkaller.appspotmail.com`)
 - **Reviewed-by / Acked-by**: Code reviewer / subsystem maintainer signoff
-- **Cc: stable**: Include if the bug affects stable/LTS kernels
 - **Signed-off-by**: Required, always last (Developer Certificate of Origin)
+  - **MUST read from `git config user.name` and `git config user.email`** to get
+    the correct author identity — never hardcode or guess the name/email
+  - Format: `Signed-off-by: Name <email>` matching git config exactly
 
 **Tag ordering** (per `Documentation/process/submitting-patches.rst`):
 ```
 Fixes: → Reported-by: → Closes: → Link: → Tested-by: →
-Reviewed-by: → Acked-by: → Cc: → Signed-off-by:
+Reviewed-by: → Acked-by: → Signed-off-by:
 ```
 
 ---

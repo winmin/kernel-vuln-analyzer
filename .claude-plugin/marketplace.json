@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "kernel-vuln-analyzer",
-      "source": ".",
+      "source": "./",
       "description": "Analyze Linux kernel vulnerabilities from KASAN/UBSAN/BUG crash logs or CVE descriptions. Full root cause analysis, exploitability assessment, patch development, and QEMU verification.",
       "version": "1.0.0",
       "author": {

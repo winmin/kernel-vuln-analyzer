@@ -201,6 +201,19 @@ WRONG:  net/bluetooth/l2cap_core.c → "this is net/ → netdev/net.git → PATC
 RIGHT:  net/bluetooth/l2cap_core.c → get_maintainer.pl → bluetooth.git → PATCH bluetooth
 ```
 
+**Another trap**: Many subsystems also maintain a `-next` tree for development patches
+(e.g., `netfilter/nf-next.git`, `netdev/net-next.git`, `bpf/bpf-next.git`).
+A fix may exist in **either** the fixes tree or the -next tree but not yet in
+`torvalds/linux.git`. **You MUST fetch and search both subsystem trees during
+deduplication — searching only `origin` (torvalds) will miss fixes that are
+queued in the subsystem but not yet merged into mainline.**
+
+```
+WRONG:  git log origin/master --grep='nf_tables' -- net/netfilter/   ← only searches torvalds
+RIGHT:  git fetch nf; git fetch nf-next
+        git log nf/main nf-next/main origin/master --grep='nf_tables' -- net/netfilter/
+```
+
 **Step 3: When in doubt, always trust `get_maintainer.pl`**
 
 ```bash
@@ -323,35 +336,62 @@ Writing a patch against stale source is a critical mistake: the patch may not ap
 mainline, may fix an already-fixed bug, or may be semantically wrong due to context changes.
 Always verify the source is current before proceeding.
 
-**Step 1: Check if the local tree is up-to-date with remote**
+**Step 1: Check if the local tree is up-to-date with remote AND fetch subsystem trees**
 
 ```bash
 git fetch origin
 git log HEAD..origin/master --oneline | head -10
 # If output is non-empty → the local tree is behind. Update it:
 git pull --rebase origin master
+
+# CRITICAL: Also fetch the subsystem tree for the affected file.
+# Use the subsystem tree mapping table above, or run:
+#   ./scripts/get_maintainer.pl --scm <path/to/affected/file>
+# to find the correct git tree URL.
+#
+# Example for net/netfilter/:
+#   git remote add nf https://git.kernel.org/pub/scm/linux/kernel/git/netfilter/nf.git 2>/dev/null
+#   git remote add nf-next https://git.kernel.org/pub/scm/linux/kernel/git/netfilter/nf-next.git 2>/dev/null
+#   git fetch nf
+#   git fetch nf-next
+#
+# Example for net/core/, net/ipv4/, drivers/net/:
+#   git remote add net https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git 2>/dev/null
+#   git remote add net-next https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git 2>/dev/null
+#   git fetch net
+#   git fetch net-next
+#
+# For other subsystems, follow the same pattern with the tree from the table.
+# The 2>/dev/null on `git remote add` suppresses "already exists" errors on re-runs.
 ```
 
-**Step 2: Check if the bug is already fixed upstream**
+**Step 2: Check if the bug is already fixed — search BOTH origin AND subsystem trees**
 
 This is the most important check — someone may have already submitted a fix.
+**A fix may exist in the subsystem tree (e.g., nf.git, net-next.git) but not yet
+in torvalds/linux.git.** Searching only origin will miss these. You MUST search
+all fetched remotes.
 
 ```bash
+# Determine which refs to search (adjust remote names per subsystem)
+# Example for netfilter — replace nf/main nf-next/main with your subsystem refs
+SEARCH_REFS="origin/master nf/main nf-next/main"
+
 # Search for patches touching the vulnerable function
-git log --all --oneline -S '<vulnerable_function_name>' -- <file>
+git log $SEARCH_REFS --oneline -S '<vulnerable_function_name>' -- <file>
 
 # Search for Fixes: tags referencing the introducing commit
-git log --all --oneline --grep='Fixes: <introducing-commit-short-hash>'
+git log $SEARCH_REFS --oneline --grep='Fixes: <introducing-commit-short-hash>'
 
 # Search commit messages for the bug description keywords
-git log --all --oneline --grep='<key_keyword>' -- <file>
+git log $SEARCH_REFS --oneline --grep='<key_keyword>' -- <file>
 
 # Check the linux-stable tree for backported fixes
 git log --all --oneline --grep='<CVE-number>'
 ```
 
-If a fix already exists:
-- **Report it** — tell the user the bug is already fixed, with the fixing commit hash
+If a fix already exists (in ANY of the searched refs — origin OR subsystem tree):
+- **Report it** — tell the user the bug is already fixed, with the fixing commit hash and which tree it's in
 - **Verify the fix** — read the upstream fix to confirm it actually addresses the root cause
 - **Skip to Phase 7** — no need to write a new patch; document the existing fix in the report
 
@@ -396,22 +436,32 @@ git checkout "$CRASH_TAG"
 
 **Stage 2 — Fetch latest code and check before writing the patch**:
 ```bash
-# ALWAYS fetch the latest subsystem tree before writing ANY patch
+# ALWAYS fetch BOTH origin AND the subsystem tree before writing ANY patch
 git fetch origin
 git fetch --tags origin
+
+# Fetch the subsystem remote (must have been added in Phase 2.2 Step 1)
+# Example for netfilter:
+git fetch nf
+git fetch nf-next
 
 # Check: does the vulnerable code still exist in the latest version?
 git show origin/master:<path/to/vulnerable/file> | grep '<vulnerable_function>'
 # If the code has been refactored or removed → the bug may be moot in mainline
 
 # Check: has someone already fixed this in the latest tree?
-git log origin/master --oneline -S '<vulnerable_function>' | head -10
-git log origin/master --oneline --grep='<key_keyword>' -- <file> | head -10
+# CRITICAL: Search BOTH origin AND subsystem refs — a fix queued in the
+# subsystem tree may not have reached torvalds/linux.git yet.
+SEARCH_REFS="origin/master nf/main nf-next/main"   # adjust per subsystem
+git log $SEARCH_REFS --oneline -S '<vulnerable_function>' -- <file> | head -10
+git log $SEARCH_REFS --oneline --grep='<key_keyword>' -- <file> | head -10
 
-# If bug still exists in latest → write patch against latest HEAD:
+# If bug still exists in latest → write patch against latest subsystem HEAD:
 git checkout origin/master
 # Or for networking fixes:
 git checkout net/main       # netdev/net.git main branch
+# Or for netfilter fixes:
+git checkout nf/main        # netfilter/nf.git main branch
 ```
 
 **Stage 3 — Write the patch against the latest code**:
@@ -486,6 +536,16 @@ echo -n "1. Remote fetched: "
 git fetch origin --tags 2>&1 | tail -1
 echo "DONE"
 
+# 1b. Was SUBSYSTEM remote fetched?
+# Identify the subsystem remote from Phase 2.2 Step 1 (e.g., nf, nf-next, net, bpf)
+echo -n "1b. Subsystem remote fetched: "
+# Replace SUBSYS_REMOTE / SUBSYS_NEXT with the actual remote names
+SUBSYS_REMOTE="nf"        # adjust per subsystem
+SUBSYS_NEXT="nf-next"     # adjust per subsystem (may not exist for all)
+git fetch "$SUBSYS_REMOTE" 2>&1 | tail -1 && echo "  $SUBSYS_REMOTE DONE"
+git fetch "$SUBSYS_NEXT"   2>&1 | tail -1 && echo "  $SUBSYS_NEXT DONE"
+# If `git remote` does not list the subsystem → go back to Phase 2.2 Step 1
+
 # 2. What is the latest upstream tag?
 echo -n "2. Latest upstream tag: "
 LATEST=$(git describe --tags --abbrev=0 origin/master 2>/dev/null)
@@ -511,13 +571,19 @@ else
     echo "WARNING — file changed, MUST patch against latest"
 fi
 
-# 5. Bug already fixed upstream?
-echo -n "5. Already fixed upstream? "
-git log origin/master --oneline -S '<vulnerable_function>' -- "$VFILE" | head -3
+# 5. Bug already fixed — search origin AND subsystem trees?
+echo -n "5. Already fixed? "
+SEARCH_REFS="origin/master"
+# Add subsystem refs if they exist
+git rev-parse --verify "$SUBSYS_REMOTE/main" &>/dev/null && SEARCH_REFS="$SEARCH_REFS $SUBSYS_REMOTE/main"
+git rev-parse --verify "$SUBSYS_NEXT/main"   &>/dev/null && SEARCH_REFS="$SEARCH_REFS $SUBSYS_NEXT/main"
+echo "  Searching: $SEARCH_REFS"
+git log $SEARCH_REFS --oneline -S '<vulnerable_function>' -- "$VFILE" | head -5
 ```
 
+**If check 1b shows subsystem remote not configured → go back to Phase 2.2 Step 1.**
 **If check 3 shows FAIL → checkout the latest tag before proceeding.**
-**If check 5 shows a fix already exists → report the existing fix, skip to Phase 7.**
+**If check 5 shows a fix already exists (in ANY ref — origin OR subsystem tree) → report the existing fix, skip to Phase 7.**
 
 ### Common Mistakes This Gate Prevents
 
@@ -525,7 +591,9 @@ git log origin/master --oneline -S '<vulnerable_function>' -- "$VFILE" | head -3
 |---|---|---|
 | Patching against stale tree | Patch may not apply to mainline | Check 3 |
 | Missing a context change | Patch applies but is semantically wrong | Check 4 |
-| Duplicate work | Bug already fixed upstream | Check 5 |
+| Duplicate work (mainline) | Bug already fixed in torvalds/linux.git | Check 5 (origin) |
+| Duplicate work (subsystem) | Fix queued in subsystem tree, not yet in mainline | Check 5 (subsystem refs) |
+| Subsystem remote not fetched | Miss fixes in nf.git / net-next.git / etc. | Check 1b |
 | Wrong version in report | Report claims wrong "latest affected" | Check 2 |
 
 ---
@@ -1231,12 +1299,26 @@ LATEST=$(git describe --tags --abbrev=0 origin/master 2>/dev/null)
 echo "Latest upstream: $LATEST"
 BEHIND=$(git log --oneline HEAD..origin/master 2>/dev/null | wc -l)
 [ "$BEHIND" -gt 0 ] && echo "ERROR: $BEHIND commits behind — checkout $LATEST first!" && exit 1
-echo "OK — source is current, safe to write patch"
+
+# Final dedup check against subsystem trees (nf/nf-next/net/bpf/etc.)
+# A fix may have landed in the subsystem tree since Phase 2.2
+SUBSYS_REMOTE="nf"        # adjust per subsystem
+SUBSYS_NEXT="nf-next"     # adjust per subsystem
+git fetch "$SUBSYS_REMOTE" 2>/dev/null; git fetch "$SUBSYS_NEXT" 2>/dev/null
+SEARCH_REFS="origin/master"
+git rev-parse --verify "$SUBSYS_REMOTE/main" &>/dev/null && SEARCH_REFS="$SEARCH_REFS $SUBSYS_REMOTE/main"
+git rev-parse --verify "$SUBSYS_NEXT/main"   &>/dev/null && SEARCH_REFS="$SEARCH_REFS $SUBSYS_NEXT/main"
+echo "Dedup check against: $SEARCH_REFS"
+git log $SEARCH_REFS --oneline -S '<vulnerable_function>' -- "$VFILE" | head -3
+# If output is non-empty → someone already fixed this. STOP and verify the existing fix.
+
+echo "OK — source is current, no existing fix found, safe to write patch"
 ```
 
 **If HEAD is behind origin/master → go back to Phase 2.2 and update the tree.**
-Do NOT write a patch against stale source. This check takes 2 seconds and prevents
-rejected patches and wrong report metadata.
+**If the dedup check finds a fix in the subsystem tree → STOP, report the existing fix.**
+Do NOT write a patch against stale source or duplicate existing work. This check takes
+a few seconds and prevents rejected patches and wrong report metadata.
 
 Read `references/patch-writing-guide.md` for Linux kernel patch conventions.
 
